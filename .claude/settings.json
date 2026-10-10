@@ -1,6 +1,21 @@
 {
+  "model": "claude-sonnet-5-5",
   "env": {
     "CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5-5",
     "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"
+  },
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./MONO-HQ/data/**)",
+      "Read(./data/**)",
+      "Read(./imports/**)",
+      "Read(./**/*.db)",
+      "Read(./**/*.sqlite*)",
+      "Read(./**/*.csv)"
+    ]
   }
 }
