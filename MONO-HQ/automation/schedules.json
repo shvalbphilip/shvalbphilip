@@ -1,0 +1,13 @@
+{
+  "timeZone": "Asia/Jerusalem",
+  "allEnabled": false,
+  "notes": "Proposed schedules only. They have not been installed in Claude Cowork or any local task scheduler. Confirm times and approve before enabling.",
+  "automations": [
+    {"id":"daily-money-check","name":"Daily Money Check","cron":"30 21 * * *","enabled":false,"requires":"new verified data or user review"},
+    {"id":"weekly-money-review","name":"Weekly Money Review","cron":"0 19 * * 0","enabled":false,"requires":"verified reconciled ledger"},
+    {"id":"salary-day-reset","name":"Salary Day Reset","cron":"0 9 1 * *","enabled":false,"timeStatus":"09:00 DRAFT — confirm with user","requires":"verified posted salary and obligations"},
+    {"id":"israel-finance-research","name":"Israel Finance Research","cron":null,"enabled":false,"timeStatus":"weekly, time to be approved","requires":"official sources and citation verification"},
+    {"id":"risk-watch","name":"Risk Watch","trigger":"on_new_reconciled_transaction","enabled":false,"requires":"read-only validated events"}
+  ],
+  "guardrails":{"dryRun":true,"maxConcurrentAiJobs":2,"maxDailyCostUsd":2,"maxMonthlyCostUsd":25,"maxRetries":1,"maxTaskDurationMinutes":12}
+}

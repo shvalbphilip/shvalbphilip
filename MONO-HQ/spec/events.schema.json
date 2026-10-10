@@ -1,0 +1,24 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://mono.local/schemas/agent-event.schema.json",
+  "title":"MONO HQ public activity event",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["eventId","runId","agentId","type","occurredAt","publicSummary","origin","isDemo"],
+  "properties":{
+    "eventId":{"type":"string","minLength":1},
+    "runId":{"type":"string","minLength":1},
+    "agentId":{"enum":["mono","scout","ledger","flow","credit","budget","radar","guardian"]},
+    "type":{"enum":["queued","started","tool_started","tool_completed","progress","awaiting_input","awaiting_approval","completed","failed","cancelled","paused","heartbeat"]},
+    "occurredAt":{"type":"string","format":"date-time"},
+    "publicSummary":{"type":"string","maxLength":240},
+    "origin":{"enum":["claude-hook","agent-sdk","scheduler","user","demo"]},
+    "isDemo":{"type":"boolean"},
+    "toolCategory":{"type":"string","maxLength":60},
+    "modelId":{"type":"string"},
+    "sourceUrl":{"type":"string","format":"uri"},
+    "lastVerifiedAt":{"type":"string","format":"date-time"},
+    "estimatedCostUsd":{"type":"number","minimum":0},
+    "actualCostUsd":{"type":"number","minimum":0}
+  }
+}
