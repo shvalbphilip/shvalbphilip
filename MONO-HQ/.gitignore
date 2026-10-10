@@ -1,0 +1,25 @@
+# MONO HQ private-data exclusions
+# Do not commit real personal financial data, exported statements, or secrets.
+.env
+.env.*
+!.env.example
+private/
+financial-data/
+data/private/
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.p12
+*.p8
+*.pem
+*.key
+node_modules/
+dist/
+logs/
+.DS_Store
