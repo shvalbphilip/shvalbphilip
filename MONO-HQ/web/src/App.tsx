@@ -163,7 +163,7 @@ function Shell() {
         </header>
         <DemoBanner />
         </div>
-        <main id="main" tabIndex={-1}>{current.view()}</main>
+        <main id="main" tabIndex={-1}><div className="route" key={current.id}>{current.view()}</div></main>
       </div>
       {nav('tabbar', true)}
     </div>

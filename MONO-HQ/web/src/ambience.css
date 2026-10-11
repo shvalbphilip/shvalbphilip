@@ -1,0 +1,195 @@
+/* MONO HQ — lo-fi night office layer. Loaded after styles.css; overrides surfaces and adds slow ambient light.
+   Everything that moves is stopped by the prefers-reduced-motion rule in styles.css. */
+:root {
+  --glass: #13233299;
+  --glass-hi: #1a2d3e99;
+  --hair: #ffffff12;
+  --hair-hi: #ffffff1f;
+  --lamp-pool: #ffc8731a;
+  --halo: #9cf4bd2e;
+}
+
+/* faint film grain over the night gradient (inline SVG; CSP allows data: images) */
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.app { position: relative; z-index: 1; }
+
+/* ---------- calmer surfaces: flat frosted glass, hairlines ---------- */
+.card, .stat, .evt-feed, .side-foot {
+  background: var(--glass); border-color: var(--hair-hi);
+  box-shadow: inset 0 1px 0 var(--hair), 0 10px 30px #0000002e;
+}
+.card { padding: 18px; }
+.card-attn { border-color: #7a654099; box-shadow: inset 0 1px 0 var(--hair), 0 0 0 1px #efb07c26, 0 10px 30px #efb07c12; }
+.side { background: #0c1824cc; border-inline-end-color: var(--hair); }
+.topbar { background: #0b1420f0; border-block-end-color: var(--hair); }
+.tabbar { background: #0b1420e0; border-block-start-color: var(--hair); }
+.plain-list li, .evt { border-block-end-color: var(--hair); }
+
+/* ---------- big calm numbers ---------- */
+.stats { gap: 12px; }
+@media (min-width: 640px) { .stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
+@media (max-width: 380px) { .stat-val { font-size: 18px; } }
+.stat { padding: 14px 16px; gap: 2px; border-radius: 16px; }
+.stat-label { font-size: 11.5px; letter-spacing: 0.3px; color: #8ea6b4; }
+.stat-val { font-size: 24px; font-weight: 700; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.stat-val.dry { font-size: 16px; font-weight: 700; }
+.stat-sub { color: #7f99a8; }
+
+/* ---------- the office ---------- */
+.office { border-color: var(--hair-hi); background: #101e29; box-shadow: 0 30px 80px #00000052; }
+.office-wall { background: linear-gradient(180deg, #1c3846 0, #172e3b 100%); }
+
+/* night window: deeper sky, moon halo, slowly drifting stars */
+.window { background: radial-gradient(ellipse 120% 90% at 70% 0%, #1d3566 0, #0a1730 60%, #07112a 100%); }
+.moon { box-shadow: -6px 2px 0 0 #0e2040 inset, 0 0 26px #fff3d0aa, 0 0 60px #fff3d033; }
+.sky { position: absolute; inset: 0; animation: drift 70s ease-in-out infinite alternate; }
+.star { inline-size: 2px; block-size: 2px; box-shadow: 0 0 4px #ffffffb0; animation-duration: 4.8s; }
+.s1 { inset-block-start: 10px; inset-inline-start: 14%; }
+.s2 { inset-block-start: 30px; inset-inline-start: 40%; animation-delay: -1.2s; }
+.s3 { inset-block-start: 16px; inset-inline-start: 62%; animation-delay: -2.4s; }
+.s4 { inset-block-start: 44px; inset-inline-start: 24%; animation-delay: -3.3s; opacity: 0.7; }
+.s5 { inset-block-start: 8px; inset-inline-start: 86%; animation-delay: -0.6s; inline-size: 3px; block-size: 3px; }
+.s6 { inset-block-start: 50px; inset-inline-start: 78%; animation-delay: -4.1s; opacity: 0.6; }
+@keyframes drift { from { translate: 0 0; } to { translate: -40px 4px; } }
+
+/* neon sign breathes; a warm sconce washes the wall */
+.wall-sign { color: #a8f7c6; text-shadow: 0 0 6px #9cf4bd99, 0 0 22px #9cf4bd55, 0 0 46px #9cf4bd22; animation: neon 7s ease-in-out infinite; }
+@keyframes neon { 50% { opacity: 0.86; } } /* opacity only: the blurred shadows are painted once */
+.sconce {
+  position: absolute; inset-block: 0; inset-inline-end: 40%; inline-size: 160px; pointer-events: none;
+  background: radial-gradient(ellipse 50% 70% at 50% 0%, #ffd89a26 0, transparent 70%);
+}
+.sconce::before { content: ''; position: absolute; inset-block-start: 6px; inset-inline: 0; margin-inline: auto; inline-size: 18px; block-size: 7px; border-radius: 0 0 9px 9px; background: #e9c58b; box-shadow: 0 0 14px #ffd89a99; }
+@media (max-width: 639px) { .sconce { display: none; } }
+
+/* floor: warm lamp pools under each row of desks */
+.floor {
+  background:
+    radial-gradient(ellipse 30% 40% at 15% 30%, var(--lamp-pool) 0, transparent 70%),
+    radial-gradient(ellipse 30% 40% at 85% 30%, var(--lamp-pool) 0, transparent 70%),
+    radial-gradient(ellipse 30% 40% at 50% 85%, var(--lamp-pool) 0, transparent 70%),
+    repeating-linear-gradient(90deg, #ffffff05 0 1px, transparent 1px 72px),
+    linear-gradient(180deg, #182e3a, #13252d);
+}
+.office-legend { background: #0f1f2a; border-block-start-color: var(--hair); }
+
+/* desks: idle rests in low light, working breathes a slow mint halo */
+.desk { border-color: var(--hair-hi); background: linear-gradient(170deg, #1f3a4acc, #162b38e6 60%, #142733); transition: transform 0.35s ease, border-color 0.35s, box-shadow 0.5s, filter 0.5s; }
+.desk-idle { filter: saturate(0.82) brightness(0.9); }
+.desk:is(:hover, :focus-visible) { filter: none; }
+.desk:hover { transform: translateY(-2px); border-color: #6fd6a088; }
+/* working: a slow mint halo. The glow is painted once on a pseudo-element and only its opacity animates (cheap on phones);
+   it is inset because .desk clips overflow. */
+.desk-working { border-color: #4fae82aa; }
+.desk-working::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 1px #9cf4bd40, inset 0 0 28px var(--halo);
+  animation: halo 4s ease-in-out infinite;
+}
+@keyframes halo { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.bubble { box-shadow: 0 6px 16px #0003; }
+.bubble-idle { background: #22394799; color: #a3bcc8; }
+.bubble-idle::after { border-block-start-color: #22394799; }
+
+/* =====================================================================================================
+   After-hours studio: type, the night-shift header, and the "lights on" boot.
+   Display: Karantina (condensed Hebrew poster face). Text: IBM Plex Sans Hebrew. Both self-hosted (main.tsx).
+   Tracking: Latin capitals get --track-caps; Hebrew and numerals are never tracked.
+   ===================================================================================================== */
+:root {
+  --font-text: 'IBM Plex Sans Hebrew', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+  --font-display: 'Karantina', 'IBM Plex Sans Hebrew', system-ui, sans-serif;
+  --track-caps: 0.12em;
+}
+body { font-family: var(--font-text); }
+
+.topbar h1, .brand strong, .login-card h1, .section h2, .section-head h2, .drawer-title h2,
+.stat-val, .big, .desk-name, .wall-sign, .hero-title, .hero-time {
+  font-family: var(--font-display); font-weight: 700; line-height: 1; letter-spacing: 0;
+}
+.brand strong, .login-card h1, .drawer-title h2, .desk-name, .wall-sign { letter-spacing: var(--track-caps); }
+.topbar h1 { font-size: 32px; }
+.brand strong { font-size: 30px; }
+.login-card h1 { font-size: 44px; }
+.section h2, .section-head h2 { font-size: 26px; }
+.drawer-title h2 { font-size: 36px; }
+.big, .stat-card .big { font-size: 30px; }
+.big small { font-family: var(--font-text); }
+.stat-val { font-size: 36px; font-weight: 400; padding-block-start: 2px; }
+.stat-val small { font-family: var(--font-text); font-size: 13px; }
+.stat-val.dry { font-family: var(--font-text); font-size: 16px; font-weight: 600; line-height: 1.35; }
+.desk-name { font-size: 21px; }
+.wall-sign { font-size: 30px; inset-block-start: 20px; z-index: 2; }
+.stat-label + .big { display: block; margin-block: 4px 6px; } /* label as a kicker above poster numerals */
+@media (min-width: 640px) { .wall-sign { font-size: 38px; inset-block-start: 26px; } }
+@media (min-width: 960px) { .topbar h1 { font-size: 38px; } }
+@media (max-width: 380px) { .stat-val { font-size: 30px; } .stat-val.dry { font-size: 15px; } .desk-name { font-size: 18px; } }
+
+/* one headline per screen: on the office page the greeting leads, so the bar title steps back to a quiet label */
+.app:has(.view-office) .topbar h1 { font-family: var(--font-text); font-size: 15px; font-weight: 600; color: var(--soft); }
+
+/* ---------- night-shift header: a huge greeting on the start side, a compact clock low on the end side ---------- */
+.hero {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px 24px;
+  padding-block: 10px 6px; padding-inline: 2px;
+}
+.hero-title { font-size: clamp(54px, 14vw, 112px); line-height: 0.8; color: #eef7f8; text-shadow: 0 0 48px #9cf4bd1a; text-wrap: balance; }
+.hero-sub { margin-block-start: 12px; color: #9fb6c3; font-size: 14px; }
+.hero-clock { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; padding-block-end: 4px; }
+.hero-time { font-size: clamp(30px, 7vw, 56px); font-weight: 400; color: #cfe1e8; line-height: 0.8; }
+.hero-colon { font-style: normal; color: var(--mint); padding-inline: 1px; animation: tick 2s ease-in-out 10; } /* stops after 20s */
+@keyframes tick { 50% { opacity: 0.25; } }
+.hero-tz { font-size: 12px; color: #7f99a8; }
+
+/* office stats: a ruled strip under the greeting instead of a row of cards. Sized by the office column (container
+   query), not the viewport, so the sidebar can't cause a 4 + 1 wrap: 2 ruled columns, or one row of 5 from 760px. */
+.view-office { container-type: inline-size; }
+.view-office > .stats { gap: 0; border-block: 1px solid var(--hair-hi); }
+.view-office > .stats .stat { background: none; border: 0; box-shadow: none; border-radius: 0; }
+/* the two layouts live in disjoint container ranges, so no rule from one can outrank the other */
+@container (max-width: 759.98px) {
+  .view-office > .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-block: 8px; }
+  .view-office > .stats .stat { padding: 10px 12px; border-block-end: 1px solid var(--hair); }
+  .view-office > .stats .stat:nth-child(even) { border-inline-start: 1px solid var(--hair); }
+  .view-office > .stats .stat:nth-child(odd) { padding-inline-start: 0; }
+  .view-office > .stats .stat:last-child { border-block-end: 0; }
+  .view-office > .stats .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+@container (min-width: 760px) {
+  .view-office > .stats { grid-template-columns: repeat(5, minmax(0, 1fr)); padding-block: 14px; }
+  .view-office > .stats .stat { padding: 6px 16px; }
+  .view-office > .stats .stat + .stat { border-inline-start: 1px solid var(--hair); }
+  .view-office > .stats .stat:first-child { padding-inline-start: 0; }
+  .view-office > .stats .stat:last-child:nth-child(odd) { grid-column: auto; }
+}
+
+/* ---------- route change: content rises in softly (backwards fill only, so no transform lingers) ---------- */
+.route { animation: route-in 0.38s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+@keyframes route-in { from { opacity: 0; translate: 0 10px; } }
+
+/* ---------- "lights on": the first office view of a page load starts dark, then each desk lamp switches on ---------- */
+.window { z-index: 2; }
+.desks { position: relative; z-index: 1; }
+.floor-loading { z-index: 3; }
+.office.boot .office-wall::before, .office.boot .floor::before {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: #03080e;
+  opacity: 0; /* resting state: with reduced motion (animation: none) there is no veil at all */
+  animation: veil 1.9s ease-out 0.2s both;
+}
+@keyframes veil { from { opacity: 0.72; } to { opacity: 0; } }
+.office.boot .wall-sign { animation: neon-on 1.3s linear both, neon 7s ease-in-out 1.3s infinite; }
+@keyframes neon-on { 0% { opacity: 0.06; } 18% { opacity: 0.85; } 30% { opacity: 0.18; } 52%, 100% { opacity: 1; } } /* the only flicker: once, under 3 flashes/s */
+.office.boot .sky { animation: stars-in 2.2s ease-out 0.5s both, drift 70s ease-in-out infinite alternate; }
+@keyframes stars-in { from { opacity: 0; } }
+.office.boot .desk { animation: desk-on 0.9s ease-out both; animation-delay: calc(0.35s + var(--i, 0) * 0.14s); }
+@keyframes desk-on { from { filter: saturate(0.5) brightness(0.38); } }
+.office.boot .desk:not(.desk-failed) .lamp-glow { animation: lamp-on 0.8s ease-out both; animation-delay: calc(0.35s + var(--i, 0) * 0.14s); }
+@keyframes lamp-on { from { opacity: 0; } } /* a single rise to the lamp's own level */
+/* working lamps breathe from full strength, so nothing dips when the boot class is removed (lamp-only; `glow` is untouched) */
+.st-working .lamp-glow { animation: lamp-breathe 3.4s ease-in-out infinite; }
+@keyframes lamp-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+.desk:nth-child(2) { --i: 1; } .desk:nth-child(3) { --i: 2; } .desk:nth-child(4) { --i: 3; } .desk:nth-child(5) { --i: 4; }
+.desk:nth-child(6) { --i: 5; } .desk:nth-child(7) { --i: 6; } .desk:nth-child(8) { --i: 7; }

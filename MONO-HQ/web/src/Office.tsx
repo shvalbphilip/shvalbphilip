@@ -30,6 +30,50 @@ function useNow(ms = 1000) {
 const statusTone = (s: AgentState['status']): Tone =>
   s === 'working' ? 'ok' : s === 'failed' ? 'bad' : s === 'blocked' || s === 'stale' ? 'warn' : s === 'idle' ? 'neutral' : 'info';
 
+/* ------------------------------ night hero ------------------------------ */
+const JLM_HOUR = new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Asia/Jerusalem' });
+const JLM_HM = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'Asia/Jerusalem' });
+
+const greeting = (hour: number) =>
+  hour < 5 || hour >= 21 ? 'משמרת לילה' : hour < 12 ? 'בוקר טוב' : hour < 17 ? 'צהריים טובים' : 'ערב טוב';
+
+/** Time-of-day greeting with a big Jerusalem clock. Counts come from live state; demo is labelled as such. */
+function NightHero({ now }: { now: number }) {
+  const { state, mode } = useLive();
+  const [hh, mm] = JLM_HM.format(now).split(':');
+  const working = state?.agents.filter((a) => a.status === 'working').length ?? 0;
+  const crew = !state ? 'מתחבר למשרד…' : working === 0 ? 'כל הצוות במנוחה' : working === 1 ? 'סוכן אחד עובד עכשיו' : `${working} סוכנים עובדים עכשיו`;
+  const run = !state ? null : state.guardrails.killSwitch ? 'מתג חירום פעיל' : state.guardrails.dryRun ? 'מצב יבש' : 'AI פעיל';
+  return (
+    <header className="hero">
+      <div className="hero-greet">
+        <p className="hero-title">{greeting(Number(JLM_HOUR.format(now)))}.</p>
+        <p className="hero-sub">{crew}{run ? ` · ${run}` : ''}{mode === 'demo' ? ' · הדמיה' : ''}</p>
+      </div>
+      <time className="hero-clock" dateTime={`${hh}:${mm}`}>
+        <span className="hero-time" dir="ltr">{hh}<i className="hero-colon">:</i>{mm}</span>
+        <span className="hero-tz">ירושלים</span>
+      </time>
+    </header>
+  );
+}
+
+/**
+ * "Lights on": the first office view of a page load boots dark, then lamps switch on desk by desk.
+ * It waits for live state, so the lamps light the real desks rather than placeholders under the loading overlay.
+ */
+let officeBooted = false;
+function useBoot(ready: boolean, ms = 2600): boolean {
+  const [boot, setBoot] = useState(() => !officeBooted);
+  useEffect(() => {
+    if (!boot || !ready) return;
+    officeBooted = true;
+    const t = setTimeout(() => setBoot(false), ms);
+    return () => clearTimeout(t);
+  }, [boot, ready, ms]);
+  return boot && ready;
+}
+
 /* ------------------------------ stats row ------------------------------ */
 export function StatsRow() {
   const { state } = useLive();
@@ -221,6 +265,7 @@ export function OfficeView() {
   const { state, stateError, events, mode } = useLive();
   const now = useNow();
   const [open, setOpen] = useState<AgentId | null>(null);
+  const boot = useBoot(!!state);
 
   if (!state && stateError) return <ErrorState message={stateError} />;
 
@@ -229,6 +274,7 @@ export function OfficeView() {
   return (
     <div className="view view-office">
       {state && stateError ? <div className="callout callout-warn" role="alert">הרענון האחרון נכשל ({stateError}) · מוצגים נתונים אחרונים שהתקבלו.</div> : null}
+      <NightHero now={now} />
       <StatsRow />
       {state && state.pendingApprovals.length > 0 ? (
         <a className="callout callout-info approvals-link" href="#/missions">
@@ -236,9 +282,13 @@ export function OfficeView() {
         </a>
       ) : null}
 
-      <section className="office" aria-label="המשרד החי">
+      <section className={`office${boot ? ' boot' : ''}`} aria-label="המשרד החי">
         <div className="office-wall" aria-hidden="true">
-          <div className="window"><span className="moon" /><span className="star s1" /><span className="star s2" /><span className="star s3" /></div>
+          <div className="window">
+            <span className="moon" />
+            <span className="sky">{[1, 2, 3, 4, 5, 6].map((n) => <span key={n} className={`star s${n}`} />)}</span>
+          </div>
+          <div className="sconce" />
           <div className="wall-sign">MONO&nbsp;HQ</div>
           <div className="plant"><span /><span /><span /></div>
         </div>
