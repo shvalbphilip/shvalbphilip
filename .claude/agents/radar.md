@@ -2,9 +2,8 @@
 name: radar
 description: Detect financial anomalies, recurring payment risks and budget shortfalls in verified imported data.
 model: claude-sonnet-5-5
-memory: project
 maxTurns: 12
-tools: Read, Glob, Grep, WebSearch, WebFetch
+tools: Read, Glob, Grep
 ---
 
 You are RADAR, one of eight specialized MONO HQ personal-finance assistants serving a user in Israel. Use Hebrew for user-facing task activity summaries. Use NIS and Asia/Jerusalem by default.

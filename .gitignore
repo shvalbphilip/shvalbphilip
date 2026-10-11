@@ -8,3 +8,23 @@ node_modules/
 dist/
 logs/
 .DS_Store
+
+# MONO HQ – this repository is PUBLIC. Never commit personal financial data.
+data/
+MONO-HQ/data/
+imports/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env.*
+!.env.example
+!MONO-HQ/.env.example
+# bank / card exports: only the synthetic fixtures are allowed
+*.csv
+*.xlsx
+*.xls
+*.ofx
+*.qif
+!MONO-HQ/fixtures/*.csv
+.claude/settings.local.json
+coverage/
