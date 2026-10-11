@@ -238,7 +238,11 @@ export function OfficeView() {
 
       <section className="office" aria-label="המשרד החי">
         <div className="office-wall" aria-hidden="true">
-          <div className="window"><span className="moon" /><span className="star s1" /><span className="star s2" /><span className="star s3" /></div>
+          <div className="window">
+            <span className="moon" />
+            <span className="sky">{[1, 2, 3, 4, 5, 6].map((n) => <span key={n} className={`star s${n}`} />)}</span>
+          </div>
+          <div className="sconce" />
           <div className="wall-sign">MONO&nbsp;HQ</div>
           <div className="plant"><span /><span /><span /></div>
         </div>
