@@ -100,6 +100,9 @@ export const MIGRATIONS: Array<string | ((db: Db) => void)> = [
     `);
     if (repaired) appendAudit(db, 'system', 'audit.repair', `re-chained ${repaired} audit rows written without a hash by an older version`);
   },
+  // v4: the older importer stored "NIS" as its own currency; budgets now count only ILS, so normalise those rows.
+  // ref_hash is left as stored: a re-import of the same file is then flagged as possible duplicates, never silently added.
+  `UPDATE transactions SET currency = 'ILS' WHERE currency = 'NIS';`,
 ];
 
 const PRIVATE_FS = process.platform !== 'win32';

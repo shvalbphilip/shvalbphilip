@@ -15,7 +15,9 @@
       "Read(./imports/**)",
       "Read(./**/*.db)",
       "Read(./**/*.sqlite*)",
-      "Read(./**/*.csv)"
+      "Read(./**/*.csv)",
+      "Read(./**/*.db-wal)",
+      "Read(./**/*.db-shm)"
     ]
   }
 }

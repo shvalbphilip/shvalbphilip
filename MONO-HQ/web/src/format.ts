@@ -40,6 +40,14 @@ export function fmtIls(agorot: number, signed = false): string {
   return signed && agorot > 0 ? `+${body}` : body;
 }
 
+/** Shekels as ₪; any other currency with its ISO code, never converted or shown as ₪. */
+export function fmtMoney(agorot: number, currency = 'ILS', signed = false): string {
+  if (currency === 'ILS') return fmtIls(agorot, signed);
+  const body = `${nf.format(Math.abs(agorot) / 100)} ${currency}`;
+  if (agorot < 0) return `−${body}`;
+  return signed && agorot > 0 ? `+${body}` : body;
+}
+
 export function fmtUsd(n: number): string {
   if (n > 0 && n < 0.01) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;

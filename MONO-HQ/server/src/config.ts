@@ -4,6 +4,8 @@ export interface AppConfig {
   host: string;
   /** Extra hostname clients may use (e.g. a `tailscale serve` *.ts.net name). Allowlist only: never a bind address. */
   publicHost: string | null;
+  /** Exact extra browser origins allowed to write (the Vite dev server). Empty unless MONO_DEV_ORIGINS is set. */
+  devOrigins: string[];
   port: number;
   dataDir: string;
   accessToken: string | null;
@@ -31,6 +33,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     host,
     publicHost,
+    devOrigins: (env.MONO_DEV_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+$/.test(s)),
     port: num(env.MONO_PORT, 8787),
     dataDir: env.MONO_DATA_DIR || new URL('../../data', import.meta.url).pathname,
     accessToken,

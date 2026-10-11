@@ -51,11 +51,14 @@ export function createHttpServer(app: App, distDir = fileURLToPath(new URL('../.
   /** Brute-force limiter shared by login and step-up: N wrong secrets per minute per IP. */
   function throttle(req: IncomingMessage): { ok: () => void; fail: (status: number, msg: string) => never } {
     const ip = req.socket.remoteAddress ?? '?'; const now = Date.now();
-    const a = attempts.get(ip);
-    if (a && a.reset > now && a.n >= LOGIN_ATTEMPTS_PER_MINUTE) throw new HttpError(429, 'too many attempts');
+    let a = attempts.get(ip);
+    if (!a || a.reset <= now) a = { n: 0, reset: now + 60_000 };
+    if (a.n >= LOGIN_ATTEMPTS_PER_MINUTE) throw new HttpError(429, 'too many attempts');
+    // Counted now, before the caller awaits the body: parallel guesses each use up an attempt (they used to count as one).
+    a.n++; attempts.set(ip, a);
     return {
       ok: () => attempts.delete(ip),
-      fail: (status, msg) => { attempts.set(ip, { n: (a && a.reset > now ? a.n : 0) + 1, reset: a && a.reset > now ? a.reset : now + 60_000 }); throw new HttpError(status, msg); },
+      fail: (status, msg) => { throw new HttpError(status, msg); },
     };
   }
 
@@ -81,27 +84,50 @@ export function createHttpServer(app: App, distDir = fileURLToPath(new URL('../.
   }
   const json = (res: ServerResponse, status: number, body: unknown) => { headers(res, { 'Content-Type': 'application/json; charset=utf-8' }); res.statusCode = status; res.end(JSON.stringify(body)); };
 
-  async function body<T = Record<string, unknown>>(req: IncomingMessage): Promise<T> {
-    const ct = String(req.headers['content-type'] ?? '');
-    if (!ct.includes('application/json')) throw new HttpError(415, 'Content-Type must be application/json');
+  /** Parsed once per request and memoised, so a pre-routing check can look at the body without consuming it. */
+  const parsedBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
+  function body<T = Record<string, unknown>>(req: IncomingMessage): Promise<T> {
+    let pr = parsedBodies.get(req);
+    if (!pr) { pr = readBody(req); parsedBodies.set(req, pr); }
+    return pr as Promise<T>;
+  }
+  const peekKillOn = async (req: IncomingMessage) => (await body<{ on?: unknown }>(req)).on === true;
+  async function readBody<T>(req: IncomingMessage): Promise<T> {
+    if (!isJson(req)) throw new HttpError(415, 'Content-Type must be application/json');
     const chunks: Buffer[] = []; let n = 0;
     for await (const c of req) { n += (c as Buffer).length; if (n > MAX_BODY) throw new HttpError(413, 'body too large'); chunks.push(c as Buffer); }
     if (n === 0) return {} as T;
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T; } catch { throw new HttpError(400, 'invalid JSON'); }
   }
 
-  /** Origin must be one of the allowed hosts (any port), never merely "whatever Host says" (DNS rebinding). */
+  /**
+   * Origin must be this server exactly: an allowed host on the port the request arrived on, or the MONO_PUBLIC_HOST
+   * over https:443 (tailscale serve), or an origin listed in MONO_DEV_ORIGINS (the Vite dev server). Matching on the
+   * host alone let any other app on another localhost port drive the API. Never "whatever Host says" (DNS rebinding).
+   */
   function sameOrigin(req: IncomingMessage): boolean {
     const origin = req.headers.origin;
-    if (!origin) return true; // non-browser clients (curl/tests); cookie auth + SameSite still protect browsers
-    try { const u = new URL(origin); return (u.protocol === 'http:' || u.protocol === 'https:') && hosts.has(u.hostname.toLowerCase()); } catch { return false; }
+    if (!origin) return true; // non-browser clients (curl/tests); browsers always send Origin on cross-origin writes
+    if (app.cfg.devOrigins.includes(origin)) return true;
+    try {
+      const u = new URL(origin); const host = u.hostname.toLowerCase();
+      if (!hosts.has(host) || (u.protocol !== 'http:' && u.protocol !== 'https:')) return false;
+      const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+      if (app.cfg.publicHost && host === app.cfg.publicHost) return u.protocol === 'https:' && port === '443';
+      return port === String(req.socket.localPort);
+    } catch { return false; }
   }
+  /** Exactly application/json (optionally with parameters). `text/plain; x=application/json` skips the CORS preflight. */
+  const isJson = (req: IncomingMessage) => String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase() === 'application/json';
+  /** Writes that stay allowed while the client is in demo mode; everything else acts on the real system. */
+  const DEMO_WRITES = new Set(['/api/demo/start', '/api/demo/stop', '/api/login', '/api/logout']);
 
   const modeDemo = (u: URL) => u.searchParams.get('mode') === 'demo';
 
   async function route(req: IncomingMessage, res: ServerResponse, u: URL): Promise<void> {
     const m = req.method ?? 'GET'; const p = u.pathname;
     if (m !== 'GET' && !sameOrigin(req)) throw new HttpError(403, 'cross-origin request blocked');
+    if (m !== 'GET' && !isJson(req)) throw new HttpError(415, 'Content-Type must be application/json'); // forces a CORS preflight for any cross-site write
 
     if (p === '/api/auth' && m === 'GET') return json(res, 200, { required: !!token, authenticated: authed(req) });
     if (p === '/api/login' && m === 'POST') {
@@ -116,6 +142,10 @@ export function createHttpServer(app: App, distDir = fileURLToPath(new URL('../.
       return json(res, 200, { ok: true });
     }
     if (!authed(req)) throw new HttpError(401, 'unauthorized');
+    // Demo mode is a view: its controls must not act on the real system. The emergency stop may always be engaged.
+    if (m !== 'GET' && modeDemo(u) && !DEMO_WRITES.has(p) && !(p === '/api/system/kill-switch' && (await peekKillOn(req)))) {
+      throw new HttpError(409, 'לא זמין במצב הדגמה — עבור למצב אמיתי כדי לבצע פעולה זו');
+    }
 
     if (p === '/api/logout' && m === 'POST') {
       if (token && app.sessions.revoke(sessionId(req))) app.guard.audit('user', 'session.logout', 'current session revoked');
@@ -147,7 +177,7 @@ export function createHttpServer(app: App, distDir = fileURLToPath(new URL('../.
       const [, id, act] = mt as unknown as [string, string, 'pause' | 'resume' | 'cancel' | 'retry'];
       try { return json(res, 200, app.orch[act](id)); } catch (e) { throw new HttpError(409, (e as Error).message); }
     }
-    if (p === '/api/approvals' && m === 'GET') return json(res, 200, app.orch.pendingApprovals());
+    if (p === '/api/approvals' && m === 'GET') return json(res, 200, modeDemo(u) ? [] : app.orch.pendingApprovals());
     if ((mt = /^\/api\/approvals\/(\w+)\/(approve|reject)$/.exec(p)) && m === 'POST') {
       try { return json(res, 200, app.orch.decideApproval(mt[1]!, mt[2] === 'approve')); } catch (e) { throw new HttpError(409, (e as Error).message); }
     }

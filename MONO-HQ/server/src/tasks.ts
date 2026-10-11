@@ -99,6 +99,7 @@ export class TaskStore {
       dryRun: !!r.dry_run, origin: r.origin as Task['origin'], createdAt: r.created_at, attempts: r.attempts,
       estimatedCostUsd: r.estimated_cost_usd, actualCostUsd: r.actual_cost_usd, steps,
     };
+    if (this.db.prepare("SELECT 1 FROM spend WHERE task_id = ? AND model_id = 'unreported-estimate' LIMIT 1").get(r.id)) t.costEstimated = true;
     if (r.automation_id) t.automationId = r.automation_id;
     if (r.started_at) t.startedAt = r.started_at;
     if (r.finished_at) t.finishedAt = r.finished_at;

@@ -79,8 +79,8 @@ export function MissionsView() {
                   <span>נוצר {fmtDateTime(ap.createdAt)}</span>
                 </div>
                 <div className="actions">
-                  <button className="btn btn-primary" disabled={busy !== null} onClick={() => decide(ap, 'approve')}>אשר</button>
-                  <button className="btn btn-danger-ghost" disabled={busy !== null} onClick={() => decide(ap, 'reject')}>דחה</button>
+                  <button className="btn btn-primary" disabled={busy !== null || mode === 'demo'} onClick={() => decide(ap, 'approve')}>אשר</button>
+                  <button className="btn btn-danger-ghost" disabled={busy !== null || mode === 'demo'} onClick={() => decide(ap, 'reject')}>דחה</button>
                 </div>
               </li>
             ))}
@@ -119,7 +119,9 @@ export function MissionsView() {
                 <div className="card-meta">
                   <span>נוצר {fmtDateTime(t.createdAt)}</span>
                   {t.finishedAt ? <span>הסתיים {fmtDateTime(t.finishedAt)}</span> : null}
-                  <span>עלות: <bdi dir="ltr">{fmtUsd(t.actualCostUsd)}</bdi> (משוער <bdi dir="ltr">{fmtUsd(t.estimatedCostUsd)}</bdi>)</span>
+                  {t.costEstimated
+                    ? <span>עלות: עד <bdi dir="ltr">{fmtUsd(t.actualCostUsd)}</bdi> (הערכה — הריצה נעצרה לפני שדווחה עלות)</span>
+                    : <span>עלות: <bdi dir="ltr">{fmtUsd(t.actualCostUsd)}</bdi> (משוער <bdi dir="ltr">{fmtUsd(t.estimatedCostUsd)}</bdi>)</span>}
                 </div>
                 {t.steps.length ? (
                   <details className="steps">
@@ -136,7 +138,7 @@ export function MissionsView() {
                   </details>
                 ) : null}
                 {t.reportId ? <a className="btn btn-sm" href="#/reports">לדוח</a> : null}
-                {canDo(t.status).length ? (
+                {!t.isDemo && canDo(t.status).length ? (
                   <div className="actions">
                     {canDo(t.status).map((a) => (
                       <button key={a} className={`btn btn-sm ${a === 'cancel' ? 'btn-danger-ghost' : ''}`} disabled={busy !== null} onClick={() => doAction(t, a)}>

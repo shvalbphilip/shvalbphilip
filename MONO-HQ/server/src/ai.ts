@@ -18,6 +18,12 @@ export interface AiRunResult {
   observedModels: string[];
   failure?: 'cli-missing' | 'model-mismatch' | 'tool-mismatch' | 'timeout' | 'cancelled' | 'cli-error' | 'budget';
   detail?: string;
+  /** true only when the CLI's final result line reported total_cost_usd; a killed run usually has no such line. */
+  costReported?: boolean;
+  /** true once the CLI's start-up (system/init) line arrived; before that no model request can have been made. */
+  started?: boolean;
+  /** URLs of WebFetch calls the CLI allowed and completed (tool_result without an error), in order. */
+  fetchedUrls?: string[];
 }
 export interface AiRunner {
   cliVersion(): Promise<string | null>;
@@ -63,7 +69,22 @@ export function toolSurfaceViolation(agent: AgentId, init: { tools?: unknown; mc
   return null;
 }
 
-const webTools = (tools: string): string => tools.split(',').filter((t) => t === 'WebSearch' || t === 'WebFetch').join(',');
+/**
+ * SCOUT may fetch only these hosts. Enforced by the CLI permission system (WebFetch(domain:...) allow rules under
+ * dontAsk), not just by the prompt. Observed on 2.1.296: `domain:boi.org.il` matches only the bare host, so each
+ * official domain is listed bare and as a `*.` wildcard (www.boi.org.il, www.gov.il, btl.gov.il, ...).
+ */
+export const SCOUT_FETCH_DOMAINS = ['boi.org.il', '*.boi.org.il', 'gov.il', '*.gov.il'] as const;
+
+/** Pre-approvals under dontAsk: WebSearch as is, WebFetch only for the official domains. Read/Glob/Grep stay unlisted. */
+export function preApprovedTools(tools: string): string {
+  const out: string[] = [];
+  for (const t of tools.split(',')) {
+    if (t === 'WebSearch') out.push('WebSearch');
+    if (t === 'WebFetch') out.push(...SCOUT_FETCH_DOMAINS.map((d) => `WebFetch(domain:${d})`));
+  }
+  return out.join(',');
+}
 
 /** Claude/Anthropic variables a child CLI may inherit: authentication and config location only. */
 const CLAUDE_ENV_KEEP = new Set([
@@ -87,6 +108,10 @@ export function childEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   }
   env.CLAUDE_CODE_SUBAGENT_MODEL = REQUIRED_MODEL;
   env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '1';
+  // The CLI's small-model calls (WebFetch page processing, background helpers) default to claude-haiku-5-5, which made
+  // every SCOUT run fail the model guard (observed on 2.1.296). Pin them to the required model as well.
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = REQUIRED_MODEL;
+  env.ANTHROPIC_SMALL_FAST_MODEL = REQUIRED_MODEL;
   return env;
 }
 
@@ -114,7 +139,7 @@ export class ClaudeCliRunner implements AiRunner {
         '--permission-mode', 'dontAsk',
         // Only the web tools need pre-approval under dontAsk. Read/Glob/Grep must NOT be listed: a bare `Read` allow rule
         // approves any path on disk (observed on 2.1.296), while unlisted they stay confined to the working directory.
-        ...(webTools(tools) ? ['--allowedTools', webTools(tools)] : []),
+        ...(preApprovedTools(tools) ? ['--allowedTools', preApprovedTools(tools)] : []),
         '--max-budget-usd', String(req.maxBudgetUsd),
         '--no-session-persistence',
         // Isolation from the operator's own Claude Code setup: no user/local settings (their hooks, plugins and
@@ -129,8 +154,9 @@ export class ClaudeCliRunner implements AiRunner {
       const observed = new Set<string>();
       let text = '', cost = 0, buf = '', stderr = '', settled = false, mismatch: string | null = null;
       let timedOut = false, cancelled = false, resultErr: string | null = null, budgetHit = false;
-      let toolViolation: string | null = null, toolsChecked = false;
-      const toolById = new Map<string, string>();
+      let toolViolation: string | null = null, toolsChecked = false, costReported = false;
+      const toolById = new Map<string, { name: string; url?: string }>();
+      const fetchedUrls: string[] = [];
 
       const kill = () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 3000).unref(); };
       const finish = (r: AiRunResult) => { if (settled) return; settled = true; clearTimeout(timer); signal.removeEventListener('abort', onAbort); resolve(r); };
@@ -157,18 +183,22 @@ export class ClaudeCliRunner implements AiRunner {
           noteModel(msg.message?.model);
           for (const b of msg.message?.content ?? []) {
             if (b.type === 'tool_use') {
-              toolById.set(b.id, b.name);
+              const url = typeof b.input?.url === 'string' ? b.input.url : undefined;
+              toolById.set(b.id, { name: String(b.name), url });
               let host: string | undefined;
-              try { if (typeof b.input?.url === 'string') host = new URL(b.input.url).hostname; } catch { /* ignore */ }
+              try { if (url) host = new URL(url).hostname; } catch { /* ignore */ }
               req.onTool?.({ phase: 'started', toolName: String(b.name), host });
             }
           }
         } else if (msg.type === 'user') {
           for (const b of msg.message?.content ?? []) {
-            if (b.type === 'tool_result') req.onTool?.({ phase: 'completed', toolName: toolById.get(b.tool_use_id) ?? 'tool', failed: !!b.is_error });
+            if (b.type !== 'tool_result') continue;
+            const used = toolById.get(b.tool_use_id);
+            if (used?.name === 'WebFetch' && used.url && !b.is_error) fetchedUrls.push(used.url);
+            req.onTool?.({ phase: 'completed', toolName: used?.name ?? 'tool', failed: !!b.is_error });
           }
         } else if (msg.type === 'result') {
-          if (typeof msg.total_cost_usd === 'number') cost = msg.total_cost_usd;
+          if (typeof msg.total_cost_usd === 'number') { cost = msg.total_cost_usd; costReported = true; }
           if (msg.modelUsage && typeof msg.modelUsage === 'object') for (const m of Object.keys(msg.modelUsage)) noteModel(m);
           if (msg.is_error) resultErr = String(msg.subtype ?? 'error');
           if (String(msg.subtype ?? '').includes('budget')) budgetHit = true;
@@ -188,7 +218,7 @@ export class ClaudeCliRunner implements AiRunner {
       child.on('close', (code) => {
         if (buf.trim()) handle(buf.trim());
         const models = [...observed];
-        const base = { text, costUsd: cost, observedModels: models };
+        const base = { text, costUsd: cost, observedModels: models, costReported, fetchedUrls, started: toolsChecked };
         if (mismatch) return finish({ ...base, ok: false, text: '', failure: 'model-mismatch', detail: `זוהה מודל לא מורשה: ${mismatch}` });
         if (toolViolation) return finish({ ...base, ok: false, text: '', failure: 'tool-mismatch', detail: `משטח הכלים אינו תואם להרשאות הסוכן (${toolViolation})` });
         if (cancelled) return finish({ ...base, ok: false, failure: 'cancelled', detail: 'בוטל על ידי המשתמש או מתג החירום' });

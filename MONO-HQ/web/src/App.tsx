@@ -140,7 +140,7 @@ function Shell() {
 
   return (
     <div className="app">
-      <a className="skip" href="#main">דלג לתוכן</a>
+      <a className="skip" href="#main" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>דלג לתוכן</a>
       <aside className="side">
         <div className="brand"><div className="brandmark" aria-hidden="true">M</div><div><strong>MONO</strong><small>FINANCE HQ</small></div></div>
         {nav('nav-side', false)}

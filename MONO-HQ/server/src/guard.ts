@@ -13,6 +13,8 @@ export function jerusalemMonth(d = new Date()): string { return jerusalemDay(d).
 
 export class Guard {
   private cached: Guardrails;
+  /** Budget held by AI runs in flight (key -> USD), so concurrent runs cannot jointly exceed the caps. */
+  private reserved = new Map<string, number>();
   constructor(private db: Db, private defaults: Guardrails) {
     this.cached = { ...defaults, ...getSetting<Partial<Guardrails>>(db, 'guardrails', {}) };
   }
@@ -64,11 +66,16 @@ export class Guard {
     };
   }
 
-  /** Remaining USD an AI job may spend right now (min of day/month headroom). */
+  /** Remaining USD an AI job may spend right now (min of day/month headroom, minus budget held by runs in flight). */
   headroomUsd(now = new Date()): number {
-    const g = this.cached; const t = this.spendTotals(now);
-    return Math.max(0, Math.min(g.maxDailyCostUsd - t.dayUsd, g.maxMonthlyCostUsd - t.monthUsd));
+    const g = this.cached; const t = this.spendTotals(now); const held = this.reservedUsd();
+    return Math.max(0, Math.min(g.maxDailyCostUsd - t.dayUsd - held, g.maxMonthlyCostUsd - t.monthUsd - held));
   }
+
+  /** Hold `usd` for an AI run until release(); call synchronously right after canStartAi passes. */
+  reserve(key: string, usd: number): void { this.reserved.set(key, Math.max(0, usd)); }
+  release(key: string): void { this.reserved.delete(key); }
+  reservedUsd(): number { let s = 0; for (const v of this.reserved.values()) s += v; return round(s); }
 
   /** The single gate every AI step must pass. runningAi is the current number of live AI jobs. */
   canStartAi(estimatedUsd: number, runningAi: number, now = new Date()): Denial {
@@ -76,9 +83,9 @@ export class Guard {
     if (g.killSwitch) return { ok: false, code: 'kill-switch', messageHe: 'מתג החירום פעיל — כל עבודת AI חסומה.' };
     if (g.dryRun) return { ok: false, code: 'dry-run', messageHe: 'מצב יבש פעיל — לא מבוצעות קריאות AI אמיתיות.' };
     if (runningAi >= g.maxConcurrentAiJobs) return { ok: false, code: 'concurrency', messageHe: `הגעת למגבלת ${g.maxConcurrentAiJobs} משימות AI במקביל.` };
-    const t = this.spendTotals(now);
-    if (t.dayUsd + estimatedUsd > g.maxDailyCostUsd) return { ok: false, code: 'daily-limit', messageHe: `המשימה תחרוג מהתקציב היומי (${g.maxDailyCostUsd}$).` };
-    if (t.monthUsd + estimatedUsd > g.maxMonthlyCostUsd) return { ok: false, code: 'monthly-limit', messageHe: `המשימה תחרוג מהתקציב החודשי (${g.maxMonthlyCostUsd}$).` };
+    const t = this.spendTotals(now); const held = this.reservedUsd();
+    if (t.dayUsd + held + estimatedUsd > g.maxDailyCostUsd) return { ok: false, code: 'daily-limit', messageHe: `המשימה תחרוג מהתקציב היומי (${g.maxDailyCostUsd}$).` };
+    if (t.monthUsd + held + estimatedUsd > g.maxMonthlyCostUsd) return { ok: false, code: 'monthly-limit', messageHe: `המשימה תחרוג מהתקציב החודשי (${g.maxMonthlyCostUsd}$).` };
     return { ok: true };
   }
 
