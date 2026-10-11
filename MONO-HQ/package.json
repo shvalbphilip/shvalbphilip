@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev:server": "tsx watch --env-file-if-exists=.env.local server/src/main.ts",
     "dev:web": "vite",
@@ -16,6 +18,8 @@
     "check": "npm run typecheck && npm test && npm run build && npm run audit && npm run secret-scan"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-sans-hebrew": "^5.3.0",
+    "@fontsource/karantina": "^5.3.0",
     "croner": "^10.0.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
