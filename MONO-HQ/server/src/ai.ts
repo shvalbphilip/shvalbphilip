@@ -36,8 +36,17 @@ export function versionAtLeast(v: string, min: string): boolean {
   return true;
 }
 
-/** Least-privilege tool allowlist: read-only research tools only. No Bash/Edit/Write, no MCP. */
-const TOOLS = 'Read,Glob,Grep,WebSearch,WebFetch';
+/**
+ * Least-privilege, per-agent tool allowlists. No Bash/Edit/Write, no MCP for anyone.
+ * - mono only summarises data the server already computed: no tools at all.
+ * - scout is the single agent allowed on the web (and only gov.il / boi.org.il per its prompt; research.ts re-validates URLs).
+ * - everyone else may read project files only.
+ */
+export function toolsForAgent(agent: AgentId): string {
+  if (agent === 'mono') return '';
+  if (agent === 'scout') return 'WebSearch,WebFetch';
+  return 'Read,Glob,Grep';
+}
 
 export class ClaudeCliRunner implements AiRunner {
   constructor(private bin: string, private cwd: string) {}
@@ -54,13 +63,14 @@ export class ClaudeCliRunner implements AiRunner {
 
   run(req: AiRunRequest, signal: AbortSignal): Promise<AiRunResult> {
     return new Promise((resolve) => {
+      const tools = toolsForAgent(req.agentId);
       const args = [
         '-p', '--output-format', 'stream-json', '--verbose',
         '--model', REQUIRED_MODEL, // never pass --fallback-model: a silent downgrade must fail instead
         '--agent', req.agentId,
-        '--tools', TOOLS,
+        '--tools', tools, // an empty list disables every built-in tool
         '--permission-mode', 'dontAsk',
-        '--allowedTools', TOOLS,
+        ...(tools ? ['--allowedTools', tools] : []),
         '--max-budget-usd', String(req.maxBudgetUsd),
         '--no-session-persistence',
       ];

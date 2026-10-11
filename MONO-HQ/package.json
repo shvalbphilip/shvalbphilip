@@ -5,12 +5,15 @@
   "type": "module",
   "engines": { "node": ">=22.13" },
   "scripts": {
-    "dev:server": "tsx watch server/src/main.ts",
+    "dev:server": "tsx watch --env-file-if-exists=.env.local server/src/main.ts",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "tsx server/src/main.ts",
+    "start": "tsx --env-file-if-exists=.env.local server/src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "audit": "npm audit --audit-level=high",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run audit && npm run secret-scan"
   },
   "dependencies": {
     "croner": "^10.0.1",

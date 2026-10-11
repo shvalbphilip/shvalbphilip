@@ -2,17 +2,20 @@ import { chmodSync, mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { AgentId } from '../../shared/contract.ts';
 import { ClaudeCliRunner, isRequiredModel, verifyModelStatus, versionAtLeast } from '../src/ai.ts';
 
 const fake = new URL('./fixtures/fake-claude.mjs', import.meta.url).pathname;
 chmodSync(fake, 0o755);
 const tmp = mkdtempSync(join(tmpdir(), 'monohq-'));
-const run = (env: Record<string, string>, over: { timeoutMs?: number; signal?: AbortSignal; bin?: string } = {}) => {
+const run = (env: Record<string, string>, over: { timeoutMs?: number; signal?: AbortSignal; bin?: string; agentId?: AgentId } = {}) => {
   Object.assign(process.env, { FAKE_MODE: 'ok', FAKE_MODEL: 'claude-sonnet-5-5', FAKE_RESULT_MODEL: '', FAKE_ARGS_FILE: join(tmp, 'args.jsonl'), FAKE_COST: '0.04' }, env);
   if (!env.FAKE_RESULT_MODEL) delete process.env.FAKE_RESULT_MODEL;
   const tools: string[] = [];
-  return new ClaudeCliRunner(over.bin ?? fake, tmp).run({ agentId: 'scout', prompt: 'hi', maxBudgetUsd: 0.3, timeoutMs: over.timeoutMs ?? 5000, onTool: (n) => tools.push(`${n.phase}:${n.toolName}:${n.host ?? ''}`) }, over.signal ?? new AbortController().signal).then((r) => ({ r, tools }));
+  return new ClaudeCliRunner(over.bin ?? fake, tmp).run({ agentId: over.agentId ?? 'scout', prompt: 'hi', maxBudgetUsd: 0.3, timeoutMs: over.timeoutMs ?? 5000, onTool: (n) => tools.push(`${n.phase}:${n.toolName}:${n.host ?? ''}`) }, over.signal ?? new AbortController().signal).then((r) => ({ r, tools }));
 };
+const lastArgs = (): string[] => JSON.parse(readFileSync(join(tmp, 'args.jsonl'), 'utf8').trim().split('\n').pop()!).args;
+const flag = (args: string[], name: string): string | undefined => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 
 describe('model identity', () => {
   it('accepts only claude-sonnet-5-5 (optionally with a context suffix)', () => {
@@ -35,6 +38,21 @@ describe('Claude CLI adapter (against a fake claude binary)', () => {
     expect(rec.args).not.toContain('--fallback-model');
     expect(rec.args.join(' ')).not.toMatch(/Bash|Edit|Write/);
     expect(rec.env).toEqual({ sub: 'claude-sonnet-5-5', force: '1', token: null });
+  });
+  it('passes a per-agent tool list: scout web-only, mono none at all, others read-only file tools', async () => {
+    await run({}, { agentId: 'scout' });
+    let a = lastArgs();
+    expect(flag(a, '--tools')).toBe('WebSearch,WebFetch'); expect(flag(a, '--allowedTools')).toBe('WebSearch,WebFetch');
+    await run({}, { agentId: 'mono' });
+    a = lastArgs();
+    expect(flag(a, '--tools')).toBe(''); expect(a).not.toContain('--allowedTools'); // `--tools ""` disables every built-in tool
+    expect(flag(a, '--agent')).toBe('mono');
+    for (const agent of ['guardian', 'ledger', 'radar'] as const) {
+      await run({}, { agentId: agent });
+      a = lastArgs();
+      expect(flag(a, '--tools'), agent).toBe('Read,Glob,Grep'); expect(flag(a, '--allowedTools'), agent).toBe('Read,Glob,Grep');
+      expect(a.join(' ')).not.toMatch(/WebSearch|WebFetch|Bash|Edit|Write/);
+    }
   });
   it('kills the run and fails when the session model is not Sonnet 5.5 (no silent fallback)', async () => {
     const { r } = await run({ FAKE_MODEL: 'claude-opus-5-5' });

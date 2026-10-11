@@ -1,13 +1,23 @@
 import type { Report } from '../../shared/contract.ts';
 import type { Db } from './db.ts';
+import { redact } from './redact.ts';
 import { newId, nowIso } from './util.ts';
+
+/** Applies redact() to every string inside a JSON-like value; numbers, booleans and keys are left intact. */
+export function redactDeep<T>(value: T): T {
+  if (typeof value === 'string') return redact(value) as unknown as T;
+  if (Array.isArray(value)) return value.map(redactDeep) as unknown as T;
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactDeep(v)])) as T;
+  return value;
+}
 
 export class ReportStore {
   constructor(private db: Db) {}
+  /** Title, markdown and every string in `data` are redacted before storage: a report is a long-lived artifact. */
   create(r: { kind: Report['kind']; titleHe: string; taskId: string | null; isDemo: boolean; markdown: string; data: unknown }): Report {
     const id = newId('rep'); const createdAt = nowIso();
     this.db.prepare('INSERT INTO reports (id, kind, title_he, created_at, task_id, is_demo, markdown, data) VALUES (?,?,?,?,?,?,?,?)')
-      .run(id, r.kind, r.titleHe, createdAt, r.taskId, r.isDemo ? 1 : 0, r.markdown, JSON.stringify(r.data));
+      .run(id, r.kind, redact(r.titleHe), createdAt, r.taskId, r.isDemo ? 1 : 0, redact(r.markdown), JSON.stringify(redactDeep(r.data) ?? null));
     return this.get(id)!;
   }
   get(id: string): Report | undefined {

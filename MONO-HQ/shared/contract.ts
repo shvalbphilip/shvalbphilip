@@ -128,6 +128,8 @@ export interface StateSnapshot {
   pendingApprovals: Approval[];
   lastEventSeq: number;
   storageNote: string;
+  /** true when MONO_ACCESS_TOKEN is set: sensitive actions then need the token re-entered (step-up). */
+  authRequired: boolean;
 }
 
 export interface Approval {
@@ -234,11 +236,18 @@ export interface SystemView {
   permissions: Array<{ scope: string; granted: boolean; noteHe: string }>;
   provenance: Array<{ source: string; status: 'connected' | 'not-connected' | 'manual'; noteHe: string }>;
   auditLog: Array<{ id: string; at: string; actor: string; action: string; detail: string }>;
+  /** Every audit row re-hashed in insertion order links to its predecessor (sha256 chain). */
+  auditChainValid: boolean;
   authRequired: boolean;
   bindAddress: string;
 }
 
-/** REST surface (JSON). Mutations require the access cookie when MONO_ACCESS_TOKEN is set. */
+/**
+ * REST surface (JSON). Mutations require the session cookie when MONO_ACCESS_TOKEN is set.
+ * Step-up: with a token configured, `POST /api/system/dry-run {on:false}`, `POST /api/system/kill-switch {on:false}` and any
+ * raise of maxDailyCostUsd / maxMonthlyCostUsd / maxConcurrentAiJobs must also carry `token` (the access token) in the body.
+ * Requests whose Host header is not 127.0.0.1 / localhost / [::1] / MONO_HOST are answered 421.
+ */
 export const API = {
   state: 'GET /api/state?mode=real|demo -> StateSnapshot',
   events: 'GET /api/events?after=<seq>&limit=<n>&mode=real|demo -> PublicEvent[] (oldest first)',
@@ -247,10 +256,11 @@ export const API = {
   createTask: 'POST /api/tasks {title, prompt, leadAgent?} -> Task',
   taskAction: 'POST /api/tasks/:id/(pause|resume|cancel|retry) -> Task; POST /api/approvals/:id/(approve|reject) -> Approval',
   automations: 'GET /api/automations -> Automation[]; POST /api/automations/:id/(enable|disable|run-now) {confirm:true}',
-  system: 'GET /api/system -> SystemView; POST /api/system/kill-switch {on}; POST /api/system/dry-run {on, confirm}; POST /api/system/limits {Partial<Guardrails>}; POST /api/system/verify-model',
+  system: 'GET /api/system -> SystemView; POST /api/system/kill-switch {on, token?}; POST /api/system/dry-run {on, confirm, token?}; POST /api/system/limits {Partial<Guardrails>, token?}; POST /api/system/verify-model',
   money: 'GET /api/money -> MoneyView; POST /api/money/import {csv, account} -> ImportResult',
   research: 'GET /api/research -> ResearchItem[]',
   reports: 'GET /api/reports -> Report[] (no markdown body in list? full body included); GET /api/reports/:id/download?format=md|json',
   demo: 'POST /api/demo/start | /api/demo/stop (demo events are flagged isDemo and never mixed into real mode)',
-  login: 'POST /api/login {token} sets HttpOnly cookie; GET /api/auth -> {required, authenticated}',
+  login: 'POST /api/login {token} sets an HttpOnly Secure SameSite=Strict cookie holding a random server-side session id (30 days); GET /api/auth -> {required, authenticated}',
+  logout: 'POST /api/logout revokes the current session and clears the cookie; POST /api/sessions/revoke-all -> {revoked} revokes every session (all devices)',
 } as const;

@@ -1,10 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { backfillAuditChain } from './audit.ts';
 
 export type Db = DatabaseSync;
 
-const MIGRATIONS: string[] = [
+/** A migration is either a SQL script or a function (for data fixes SQL alone cannot express). */
+export const MIGRATIONS: Array<string | ((db: Db) => void)> = [
   `
   CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE tasks (
@@ -62,19 +64,46 @@ const MIGRATIONS: string[] = [
     is_demo INTEGER NOT NULL DEFAULT 0, markdown TEXT NOT NULL, data TEXT NOT NULL
   );
   `,
+  // v2: server-side login sessions + hash-chained, append-only audit log.
+  (db) => {
+    db.exec(`
+      CREATE TABLE sessions (id_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+      ALTER TABLE audit_log ADD COLUMN prev_hash TEXT;
+      ALTER TABLE audit_log ADD COLUMN hash TEXT;
+    `);
+    backfillAuditChain(db);
+    db.exec(`
+      CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+      CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+    `);
+  },
 ];
 
+const PRIVATE_FS = process.platform !== 'win32';
+
+/** Owner-only permissions for the data directory (0700) and database files (0600). No-op on Windows. */
+function restrictPermissions(dataDir: string, file: string): void {
+  if (!PRIVATE_FS) return;
+  chmodSync(dataDir, 0o700);
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) if (existsSync(f)) chmodSync(f, 0o600);
+}
+
 export function openDb(dataDir: string): Db {
-  const file = dataDir === ':memory:' ? ':memory:' : (mkdirSync(dataDir, { recursive: true }), join(dataDir, 'mono.db'));
+  const inMemory = dataDir === ':memory:';
+  if (!inMemory) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const file = inMemory ? ':memory:' : join(dataDir, 'mono.db');
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  if (!inMemory) restrictPermissions(dataDir, file); // the -wal file exists once WAL mode is on
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (v INTEGER NOT NULL)');
   const row = db.prepare('SELECT MAX(v) AS v FROM schema_version').get() as { v: number | null };
   let v = row.v ?? 0;
   while (v < MIGRATIONS.length) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]!);
+      const m = MIGRATIONS[v]!;
+      if (typeof m === 'string') db.exec(m); else m(db);
       db.prepare('INSERT INTO schema_version (v) VALUES (?)').run(v + 1);
       db.exec('COMMIT');
     } catch (e) {

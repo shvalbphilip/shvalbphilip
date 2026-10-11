@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { REQUIRED_MODEL, type ModelVerification, type SystemView } from '../../shared/contract.ts';
 import { ClaudeCliRunner, verifyModelStatus, type AiRunner } from './ai.ts';
+import { verifyAuditChain } from './audit.ts';
 import { loadConfig, type AppConfig } from './config.ts';
 import { Demo } from './demo.ts';
 import { openDb, setSetting, type Db } from './db.ts';
@@ -11,12 +12,13 @@ import { Orchestrator } from './orchestrator.ts';
 import { ReportStore } from './reports.ts';
 import { ResearchStore } from './research.ts';
 import { Scheduler } from './scheduler.ts';
+import { SessionStore } from './sessions.ts';
 import { StateBuilder } from './state.ts';
 import { TaskStore } from './tasks.ts';
 
 export interface App {
   cfg: AppConfig; db: Db; bus: EventBus; tasks: TaskStore; guard: Guard; money: MoneyStore; research: ResearchStore; reports: ReportStore;
-  orch: Orchestrator; scheduler: Scheduler; demo: Demo; state: StateBuilder; runner: AiRunner;
+  orch: Orchestrator; scheduler: Scheduler; demo: Demo; state: StateBuilder; runner: AiRunner; sessions: SessionStore;
   system(): SystemView; verifyModel(): Promise<ModelVerification>; close(): void;
 }
 
@@ -37,7 +39,8 @@ export function createApp(opts: AppOptions = {}): App {
   const orch = new Orchestrator({ db, bus, tasks, guard, money, research, reports, runner, retryBackoffMs: opts.retryBackoffMs });
   const scheduler = new Scheduler(db, guard, orch, money, bus);
   const demo = new Demo(db, bus, tasks, opts.demoStepMs);
-  const state = new StateBuilder(db, bus, tasks, guard, orch, demo);
+  const state = new StateBuilder(db, bus, tasks, guard, orch, demo, !!cfg.accessToken);
+  const sessions = new SessionStore(db);
 
   const spendRecordingRunner: AiRunner = {
     cliVersion: () => runner.cliVersion(),
@@ -61,8 +64,9 @@ export function createApp(opts: AppOptions = {}): App {
     return {
       guardrails: guard.get(), spend: guard.summary(), model: state.modelVerification(),
       permissions: [
-        { scope: 'קריאת קבצי פרויקט (Read/Glob/Grep)', granted: true, noteHe: 'קריאה בלבד, רק כשהסוכנים רצים באמת' },
-        { scope: 'חיפוש וקריאת אתרים (WebSearch/WebFetch)', granted: true, noteHe: 'תוכן אתרים נחשב נתונים לא אמינים, לא הוראות' },
+        { scope: 'MONO: סיכום בלבד (ללא כלים)', granted: false, noteHe: 'שלב הסיכום רץ עם --tools "" — אין גישה לקבצים או לרשת' },
+        { scope: 'SCOUT: WebSearch/WebFetch בלבד', granted: true, noteHe: 'רק gov.il / boi.org.il; כתובות נבדקות גם בשרת. תוכן אתרים נחשב נתונים לא אמינים, לא הוראות' },
+        { scope: 'שאר הסוכנים: Read/Glob/Grep', granted: true, noteHe: 'קריאת קבצי פרויקט בלבד, ללא רשת, רק כשהסוכנים רצים באמת' },
         { scope: 'הרצת פקודות / כתיבת קבצים (Bash/Edit/Write)', granted: false, noteHe: 'חסום לסוכנים לצמיתות' },
         { scope: 'גישה לחשבונות בנק / העברות / הלוואות', granted: false, noteHe: 'לא מחובר. אין פעולות כספיות בשום מצב' },
         { scope: 'כתיבה לנתונים פיננסיים מקומיים', granted: true, noteHe: 'רק אחרי אישור מפורש ועם יומן ביקורת' },
@@ -75,11 +79,12 @@ export function createApp(opts: AppOptions = {}): App {
         { source: 'אימייל', status: 'not-connected', noteHe: 'לא מחובר' },
       ],
       auditLog: audit.map((a) => ({ id: a.id, at: a.at, actor: a.actor, action: a.action, detail: a.detail })),
+      auditChainValid: verifyAuditChain(db).valid,
       authRequired: !!cfg.accessToken, bindAddress: `${cfg.host}:${cfg.port}`,
     };
   }
 
   const close = () => { scheduler.stop(); orch.stop(); demo.stop(); db.close(); };
   if (opts.startScheduler !== false) scheduler.start();
-  return { cfg, db, bus, tasks, guard, money, research, reports, orch, scheduler, demo, state, runner, system, verifyModel, close };
+  return { cfg, db, bus, tasks, guard, money, research, reports, orch, scheduler, demo, state, runner, sessions, system, verifyModel, close };
 }

@@ -26,7 +26,7 @@ export function deriveAgentStatus(last: PublicEvent | undefined, taskStatus: str
 }
 
 export class StateBuilder {
-  constructor(private db: Db, private bus: EventBus, private tasks: TaskStore, private guard: Guard, private orch: Orchestrator, private demo: Demo) {}
+  constructor(private db: Db, private bus: EventBus, private tasks: TaskStore, private guard: Guard, private orch: Orchestrator, private demo: Demo, private authRequired = false) {}
 
   modelVerification(): ModelVerification {
     return getSetting<ModelVerification>(this.db, 'modelVerification', { required: REQUIRED_MODEL, status: 'unverified', checkedAt: null, observedModels: [], cliVersion: null, detail: 'עדיין לא אומת. המודל יאומת בריצה האמיתית הראשונה.' });
@@ -63,6 +63,7 @@ export class StateBuilder {
       guardrails: this.guard.get(), spend: this.guard.summary(now), model: this.modelVerification(), agents: this.agents(demoMode, now.getTime()),
       runningAiJobs: this.orch.runningAiJobs, pendingApprovals: this.orch.pendingApprovals(), lastEventSeq: this.bus.lastSeq(),
       storageNote: 'כל הנתונים נשמרים מקומית בלבד (SQLite). לא נשלחים ל-GitHub.',
+      authRequired: this.authRequired,
     };
   }
 }

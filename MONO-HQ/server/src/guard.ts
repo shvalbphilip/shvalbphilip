@@ -1,4 +1,5 @@
 import type { Guardrails, SpendSummary } from '../../shared/contract.ts';
+import { appendAudit } from './audit.ts';
 import { getSetting, setSetting, type Db } from './db.ts';
 import { jerusalemParts, newId, nowIso } from './util.ts';
 
@@ -38,9 +39,8 @@ export class Guard {
     return this.get();
   }
 
-  audit(actor: string, action: string, detail: string): void {
-    this.db.prepare('INSERT INTO audit_log (id, at, actor, action, detail) VALUES (?,?,?,?,?)').run(newId('aud'), nowIso(), actor, action, detail.slice(0, 500));
-  }
+  /** Hash-chained, append-only (see audit.ts). */
+  audit(actor: string, action: string, detail: string): void { appendAudit(this.db, actor, action, detail); }
 
   spendTotals(now = new Date()): { dayUsd: number; monthUsd: number } {
     const day = jerusalemDay(now);

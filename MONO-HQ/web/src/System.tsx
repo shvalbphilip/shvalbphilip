@@ -1,24 +1,44 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { Guardrails, SystemView } from '../../shared/contract.ts';
 import { api } from './api.ts';
 import { MODEL_STATUS_HE, fmtDateTime, fmtUsd } from './format.ts';
 import { useLive, useResource } from './live.tsx';
 import { Bar, Chip, ErrorState, Icon, Loading, Section, useConfirm, useRunner, type Tone } from './ui.tsx';
 
+/**
+ * Step-up field: when MONO_ACCESS_TOKEN is set, releasing the kill switch, turning DRY_RUN off and raising cost
+ * ceilings must re-present the token. Uncontrolled on purpose: the value lives only in a ref for the one request.
+ */
+function StepUpField({ draft }: { draft: MutableRefObject<string> }) {
+  return (
+    <label className="field">
+      <span>אסימון גישה (נדרש לפעולה זו)</span>
+      <input type="password" dir="ltr" autoComplete="off" data-autofocus onChange={(e) => { draft.current = e.target.value; }} />
+      <em className="field-hint">הזן שוב את MONO_ACCESS_TOKEN. הוא נשלח רק לבקשה הזו ולא נשמר בדפדפן.</em>
+    </label>
+  );
+}
+/** Reads the step-up draft for one request and clears it. */
+const takeToken = (draft: MutableRefObject<string>): string | undefined => { const t = draft.current.trim(); draft.current = ''; return t || undefined; };
+
 /** Prominent kill switch with confirm dialog. Used in the header and on the System page. */
 export function KillSwitch({ compact = false }: { compact?: boolean }) {
   const { mode, state, refresh } = useLive();
   const { busy, run } = useRunner();
   const [confirm, el] = useConfirm();
+  const draft = useRef('');
   const on = state?.guardrails.killSwitch ?? false;
+  const stepUp = on && (state?.authRequired ?? false);
   const click = async () => {
+    draft.current = '';
     const ok = await confirm(
       on
-        ? { title: 'שחרור מתג החירום', body: <p>המערכת תחזור לקבל ולהריץ משימות. להמשיך?</p>, confirmLabel: 'שחרר' }
+        ? { title: 'שחרור מתג החירום', body: <><p>המערכת תחזור לקבל ולהריץ משימות. להמשיך?</p>{stepUp ? <StepUpField draft={draft} /> : null}</>, confirmLabel: 'שחרר' }
         : { title: 'הפעלת מתג חירום', body: <p><strong>כל המשימות הפעילות יעצרו ולא יתחילו משימות חדשות</strong> עד ששחרור יאושר ידנית. להפעיל?</p>, confirmLabel: 'עצור הכול', danger: true },
     );
+    const token = takeToken(draft);
     if (!ok) return;
-    if (await run('kill', () => api('POST', '/api/system/kill-switch', { mode, body: { on: !on } }), on ? 'מתג החירום שוחרר' : 'מתג החירום הופעל')) refresh();
+    if (await run('kill', () => api('POST', '/api/system/kill-switch', { mode, body: { on: !on, ...(stepUp ? { token } : {}) } }), on ? 'מתג החירום שוחרר' : 'מתג החירום הופעל')) refresh();
   };
   return (
     <>
@@ -48,6 +68,7 @@ export function SystemViewPage() {
   const [confirm, confirmEl] = useConfirm();
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
+  const tokenDraft = useRef('');
 
   const g = res.data?.guardrails;
   useEffect(() => {
@@ -72,10 +93,19 @@ export function SystemViewPage() {
   if ((parsed.maxDailyCostUsd ?? g.maxDailyCostUsd) > (parsed.maxMonthlyCostUsd ?? g.maxMonthlyCostUsd)) errors.maxDailyCostUsd = 'התקרה היומית גבוהה מהחודשית';
   const canSave = Object.keys(errors).length === 0 && Object.keys(parsed).length > 0;
 
+  // Raising a cost/concurrency ceiling is a step-up action when a token is configured; lowering never is.
+  const raising = (['maxDailyCostUsd', 'maxMonthlyCostUsd', 'maxConcurrentAiJobs'] as const).some((k) => parsed[k] !== undefined && parsed[k]! > g[k]);
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSave) return;
-    if (await run('limits', () => api('POST', '/api/system/limits', { mode, body: parsed }), 'המגבלות נשמרו')) {
+    let token: string | undefined;
+    if (raising && s.authRequired) {
+      tokenDraft.current = '';
+      const ok = await confirm({ title: 'העלאת תקרה', body: <><p>העלאת תקרת עלות או מקבילות מאפשרת הוצאה גבוהה יותר.</p><StepUpField draft={tokenDraft} /></>, confirmLabel: 'שמור מגבלות' });
+      token = takeToken(tokenDraft);
+      if (!ok) return;
+    }
+    if (await run('limits', () => api('POST', '/api/system/limits', { mode, body: { ...parsed, ...(token ? { token } : {}) } }), 'המגבלות נשמרו')) {
       setDirty(false);
       void res.reload();
       refresh();
@@ -83,13 +113,24 @@ export function SystemViewPage() {
   };
   const toggleDry = async () => {
     const turningOff = g.dryRun;
+    const stepUp = turningOff && s.authRequired;
+    tokenDraft.current = '';
     const ok = await confirm(
       turningOff
-        ? { title: 'כיבוי מצב יבש', body: (<><p><strong>הסוכנים יתחילו לבצע קריאות AI אמיתיות</strong> ויצרכו עלות בהתאם למגבלות שהוגדרו.</p><p className="muted">המגבלות הן הגדרות אפליקציה ואינן מגבלות חיוב של Anthropic.</p></>), confirmLabel: 'כבה מצב יבש', danger: true }
+        ? { title: 'כיבוי מצב יבש', body: (<><p><strong>הסוכנים יתחילו לבצע קריאות AI אמיתיות</strong> ויצרכו עלות בהתאם למגבלות שהוגדרו.</p><p className="muted">המגבלות הן הגדרות אפליקציה ואינן מגבלות חיוב של Anthropic.</p>{stepUp ? <StepUpField draft={tokenDraft} /> : null}</>), confirmLabel: 'כבה מצב יבש', danger: true }
         : { title: 'הפעלת מצב יבש', body: <p>לא יבוצעו קריאות AI. משימות יירשמו בלבד.</p>, confirmLabel: 'הפעל מצב יבש' },
     );
+    const token = takeToken(tokenDraft);
     if (!ok) return;
-    if (await run('dry', () => api('POST', '/api/system/dry-run', { mode, body: { on: !g.dryRun, confirm: true } }), 'מצב הריצה עודכן')) { void res.reload(); refresh(); }
+    if (await run('dry', () => api('POST', '/api/system/dry-run', { mode, body: { on: !g.dryRun, confirm: true, ...(stepUp ? { token } : {}) } }), 'מצב הריצה עודכן')) { void res.reload(); refresh(); }
+  };
+  const logout = async () => {
+    if (await run('logout', () => api('POST', '/api/logout', { body: {} }), 'התנתקת')) location.reload();
+  };
+  const revokeAll = async () => {
+    const ok = await confirm({ title: 'ניתוק כל המכשירים', body: <p>כל ההתחברויות הפעילות (כולל זו) יבוטלו ויידרש אסימון מחדש בכל מכשיר.</p>, confirmLabel: 'נתק הכול', danger: true });
+    if (!ok) return;
+    if (await run('revoke', () => api('POST', '/api/sessions/revoke-all', { body: {} }), 'כל ההתחברויות בוטלו')) location.reload();
   };
   const verify = async () => {
     if (await run('verify', () => api('POST', '/api/system/verify-model', { mode, body: {} }), 'האימות הסתיים')) { void res.reload(); refresh(); }
@@ -190,10 +231,20 @@ export function SystemViewPage() {
           </dl>
           {!s.authRequired && !loopback ? <div className="callout callout-bad" role="alert">השרת חשוף מחוץ ל־localhost ללא אימות. הגדר MONO_ACCESS_TOKEN.</div> : null}
           {!s.authRequired && loopback ? <p className="muted small">השרת מאזין ל־localhost בלבד.</p> : null}
+          {s.authRequired ? (
+            <>
+              <p className="muted small">פעולות רגישות (כיבוי מצב יבש, שחרור מתג חירום, העלאת תקרות) מבקשות את האסימון שוב. גישה מחוץ ל־localhost חייבת לעבור ב־HTTPS.</p>
+              <div className="actions">
+                <button className="btn" type="button" onClick={logout} disabled={busy !== null}>{busy === 'logout' ? 'מתנתק…' : 'התנתק'}</button>
+                <button className="btn btn-danger" type="button" onClick={revokeAll} disabled={busy !== null}>{busy === 'revoke' ? 'מנתק…' : 'נתק את כל המכשירים'}</button>
+              </div>
+            </>
+          ) : null}
         </div>
       </Section>
 
-      <Section title="יומן ביקורת" id="audit-h">
+      <Section title="יומן ביקורת" id="audit-h" aside={<Chip tone={s.auditChainValid ? 'ok' : 'bad'} title="כל רשומה מקושרת בחתימת sha256 לקודמתה">{s.auditChainValid ? 'שרשרת ביקורת תקינה' : 'שרשרת הביקורת נפגמה!'}</Chip>}>
+        {!s.auditChainValid ? <div className="callout callout-bad" role="alert">יומן הביקורת אינו עקבי עם שרשרת החתימות — ייתכן שרשומות שונו או נמחקו מחוץ לאפליקציה.</div> : null}
         {audit.length ? (
           <div className="table-wrap">
             <table className="audit">
