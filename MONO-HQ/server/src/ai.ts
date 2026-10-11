@@ -16,7 +16,7 @@ export interface AiRunResult {
   text: string;
   costUsd: number;
   observedModels: string[];
-  failure?: 'cli-missing' | 'model-mismatch' | 'timeout' | 'cancelled' | 'cli-error' | 'budget';
+  failure?: 'cli-missing' | 'model-mismatch' | 'tool-mismatch' | 'timeout' | 'cancelled' | 'cli-error' | 'budget';
   detail?: string;
 }
 export interface AiRunner {
@@ -48,6 +48,48 @@ export function toolsForAgent(agent: AgentId): string {
   return 'Read,Glob,Grep';
 }
 
+/**
+ * Compares the tool surface the CLI reports in its init message with the agent's allowlist.
+ * Returns a reason when anything extra is available (built-in tool or MCP server), null when it matches.
+ * Observed on 2.1.296: an agent file's `tools:` frontmatter can re-add Glob/Grep on top of `--tools ""`,
+ * and without --strict-mcp-config every user/plugin MCP server is loaded, so this is checked on every run.
+ */
+export function toolSurfaceViolation(agent: AgentId, init: { tools?: unknown; mcp_servers?: unknown }): string | null {
+  if (!Array.isArray(init.tools)) return 'the CLI did not report its tool list';
+  const allowed = new Set(toolsForAgent(agent).split(',').filter(Boolean));
+  const extra = init.tools.map(String).filter((t) => !allowed.has(t));
+  if (extra.length) return `unexpected tools: ${extra.join(', ')}`;
+  if (init.mcp_servers !== undefined && (!Array.isArray(init.mcp_servers) || init.mcp_servers.length)) return 'unexpected MCP servers';
+  return null;
+}
+
+const webTools = (tools: string): string => tools.split(',').filter((t) => t === 'WebSearch' || t === 'WebFetch').join(',');
+
+/** Claude/Anthropic variables a child CLI may inherit: authentication and config location only. */
+const CLAUDE_ENV_KEEP = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_VERTEX_PROJECT_ID',
+]);
+
+/**
+ * Environment for the spawned CLI. Every other CLAUDE* variable is dropped: when MONO HQ is launched from a Claude Code
+ * session or SDK host, variables such as CLAUDE_AGENT_SDK_VERSION leak in and change CLI behaviour (observed on 2.1.296:
+ * an extra background claude-haiku-5-5 call per run, which the model guard then rejects). ANTHROPIC_* is reduced to
+ * credentials: a model override (ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_*_MODEL, ANTHROPIC_SMALL_FAST_MODEL) would change
+ * what runs, and ANTHROPIC_BASE_URL could point at a proxy that reports one model while serving another.
+ */
+export function childEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(parent)) {
+    if (k === 'MONO_ACCESS_TOKEN') continue;
+    if (/^(CLAUDE|ANTHROPIC_)/.test(k) && !CLAUDE_ENV_KEEP.has(k)) continue;
+    env[k] = v;
+  }
+  env.CLAUDE_CODE_SUBAGENT_MODEL = REQUIRED_MODEL;
+  env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '1';
+  return env;
+}
+
 export class ClaudeCliRunner implements AiRunner {
   constructor(private bin: string, private cwd: string) {}
 
@@ -70,17 +112,24 @@ export class ClaudeCliRunner implements AiRunner {
         '--agent', req.agentId,
         '--tools', tools, // an empty list disables every built-in tool
         '--permission-mode', 'dontAsk',
-        ...(tools ? ['--allowedTools', tools] : []),
+        // Only the web tools need pre-approval under dontAsk. Read/Glob/Grep must NOT be listed: a bare `Read` allow rule
+        // approves any path on disk (observed on 2.1.296), while unlisted they stay confined to the working directory.
+        ...(webTools(tools) ? ['--allowedTools', webTools(tools)] : []),
         '--max-budget-usd', String(req.maxBudgetUsd),
         '--no-session-persistence',
+        // Isolation from the operator's own Claude Code setup: no user/local settings (their hooks, plugins and
+        // allow rules), no MCP servers from any config, no skills. Project settings (model pin, deny list) still load.
+        '--setting-sources', 'project',
+        '--strict-mcp-config',
+        '--disable-slash-commands',
       ];
-      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_SUBAGENT_MODEL: REQUIRED_MODEL, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' };
-      delete env.MONO_ACCESS_TOKEN;
+      const env = childEnv(process.env);
       const child = spawn(this.bin, args, { cwd: this.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
       const observed = new Set<string>();
       let text = '', cost = 0, buf = '', stderr = '', settled = false, mismatch: string | null = null;
       let timedOut = false, cancelled = false, resultErr: string | null = null, budgetHit = false;
+      let toolViolation: string | null = null, toolsChecked = false;
       const toolById = new Map<string, string>();
 
       const kill = () => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 3000).unref(); };
@@ -100,7 +149,10 @@ export class ClaudeCliRunner implements AiRunner {
         req.onActivity?.();
         let msg: any;
         try { msg = JSON.parse(line); } catch { return; }
-        if (msg.type === 'system' && msg.subtype === 'init') noteModel(msg.model);
+        if (msg.type === 'system' && msg.subtype === 'init') {
+          noteModel(msg.model);
+          if (!toolsChecked) { toolsChecked = true; toolViolation = toolSurfaceViolation(req.agentId, msg); if (toolViolation) kill(); }
+        }
         else if (msg.type === 'assistant') {
           noteModel(msg.message?.model);
           for (const b of msg.message?.content ?? []) {
@@ -138,10 +190,12 @@ export class ClaudeCliRunner implements AiRunner {
         const models = [...observed];
         const base = { text, costUsd: cost, observedModels: models };
         if (mismatch) return finish({ ...base, ok: false, text: '', failure: 'model-mismatch', detail: `זוהה מודל לא מורשה: ${mismatch}` });
+        if (toolViolation) return finish({ ...base, ok: false, text: '', failure: 'tool-mismatch', detail: `משטח הכלים אינו תואם להרשאות הסוכן (${toolViolation})` });
         if (cancelled) return finish({ ...base, ok: false, failure: 'cancelled', detail: 'בוטל על ידי המשתמש או מתג החירום' });
         if (timedOut) return finish({ ...base, ok: false, failure: 'timeout', detail: 'חרג מזמן הריצה המרבי' });
         if (budgetHit) return finish({ ...base, ok: false, failure: 'budget', detail: 'הושג תקרת העלות למשימה' });
         if (models.length === 0 && code === 0) return finish({ ...base, ok: false, failure: 'model-mismatch', detail: 'לא ניתן היה לאמת איזה מודל רץ' });
+        if (!toolsChecked && code === 0) return finish({ ...base, ok: false, failure: 'tool-mismatch', detail: 'לא ניתן היה לאמת את משטח הכלים של הסוכן' });
         if (code !== 0 || resultErr) return finish({ ...base, ok: false, failure: 'cli-error', detail: resultErr ?? `קוד יציאה ${code}: ${stderr.slice(-200)}` });
         finish({ ...base, ok: true });
       });
