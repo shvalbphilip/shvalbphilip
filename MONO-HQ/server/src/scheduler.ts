@@ -40,7 +40,7 @@ export class Scheduler {
       const lateMin = (now.getTime() - due.getTime()) / 60_000;
       if (lateMin > def.graceMinutes) {
         this.db.prepare('UPDATE automations SET last_run_at = ?, last_status = ? WHERE id = ?').run(now.toISOString(), 'cancelled', def.id);
-        this.db.prepare('INSERT INTO audit_log (id, at, actor, action, detail) VALUES (?,?,?,?,?)').run(newId('aud'), nowIso(), 'scheduler', 'automation.missed', `${def.id} scheduled ${due.toISOString()} missed by ${Math.round(lateMin)}m (not back-filled)`);
+        this.guard.audit('scheduler', 'automation.missed', `${def.id} scheduled ${due.toISOString()} missed by ${Math.round(lateMin)}m (not back-filled)`);
         continue;
       }
       const t = this.orch.enqueue({ workflow: def.workflow, origin: 'scheduler', automationId: def.id, dedupKey: `${def.id}:${due.toISOString()}`, maxCostUsd: def.maxModelCostUsd, title: def.nameHe });

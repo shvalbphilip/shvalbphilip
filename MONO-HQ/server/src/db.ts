@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { backfillAuditChain } from './audit.ts';
+import { AUDIT_GENESIS, appendAudit, backfillAuditChain, repairUnhashedAuditRows } from './audit.ts';
 
 export type Db = DatabaseSync;
 
@@ -77,6 +77,28 @@ export const MIGRATIONS: Array<string | ((db: Db) => void)> = [
       CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
       CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
     `);
+  },
+  // v3: audit head checkpoint, so truncating the newest audit rows is detected (a hash chain alone cannot see it).
+  // The single row follows every insert via a trigger and may only ever advance by exactly one entry.
+  (db) => {
+    // v2 scheduler code wrote `automation.missed` rows without a hash. Re-chain them, but only when every hashed row is
+    // still consistent, so a repair can never launder a row that was edited after it was written.
+    const repaired = repairUnhashedAuditRows(db);
+    db.exec('CREATE TABLE audit_head (id INTEGER PRIMARY KEY CHECK (id = 1), entries INTEGER NOT NULL, hash TEXT NOT NULL)');
+    const head = db.prepare('SELECT COUNT(*) AS n, (SELECT hash FROM audit_log ORDER BY rowid DESC LIMIT 1) AS h FROM audit_log').get() as { n: number; h: string | null };
+    db.prepare('INSERT INTO audit_head (id, entries, hash) VALUES (1, ?, ?)').run(head.n, head.h ?? AUDIT_GENESIS);
+    db.exec(`
+      CREATE TRIGGER audit_head_follow AFTER INSERT ON audit_log BEGIN
+        UPDATE audit_head SET entries = entries + 1, hash = NEW.hash WHERE id = 1;
+      END;
+      CREATE TRIGGER audit_head_forward_only BEFORE UPDATE ON audit_head
+        WHEN NEW.id <> 1 OR NEW.entries <> OLD.entries + 1 OR NEW.hash IS NOT (SELECT hash FROM audit_log ORDER BY rowid DESC LIMIT 1) BEGIN
+        SELECT RAISE(ABORT, 'audit head only moves forward');
+      END;
+      CREATE TRIGGER audit_head_no_delete BEFORE DELETE ON audit_head BEGIN SELECT RAISE(ABORT, 'audit head only moves forward'); END;
+      CREATE TRIGGER audit_head_no_insert BEFORE INSERT ON audit_head BEGIN SELECT RAISE(ABORT, 'audit head only moves forward'); END;
+    `);
+    if (repaired) appendAudit(db, 'system', 'audit.repair', `re-chained ${repaired} audit rows written without a hash by an older version`);
   },
 ];
 

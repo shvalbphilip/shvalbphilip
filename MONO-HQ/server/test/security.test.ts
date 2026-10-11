@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { toolsForAgent } from '../src/ai.ts';
 import { createApp, type App } from '../src/app.ts';
-import { AUDIT_GENESIS, auditHash, verifyAuditChain } from '../src/audit.ts';
+import { AUDIT_GENESIS, appendAudit, auditHash, verifyAuditChain } from '../src/audit.ts';
 import { loadConfig } from '../src/config.ts';
 import { MIGRATIONS, openDb } from '../src/db.ts';
 import { MAX_SSE_CLIENTS, allowedHosts, createHttpServer, hostnameOf } from '../src/http.ts';
@@ -21,8 +21,8 @@ const root = new URL('../../..', import.meta.url).pathname;
 let cleanup: Array<() => void> = [];
 afterEach(() => { cleanup.forEach((f) => f()); cleanup = []; });
 
-async function boot(token: string | null, host = '127.0.0.1') {
-  const cfg = loadConfig({ MONO_HOST: host, ...(token ? { MONO_ACCESS_TOKEN: token } : {}) } as NodeJS.ProcessEnv);
+async function boot(token: string | null, host = '127.0.0.1', extraEnv: Record<string, string> = {}) {
+  const cfg = loadConfig({ MONO_HOST: host, ...(token ? { MONO_ACCESS_TOKEN: token } : {}), ...extraEnv } as NodeJS.ProcessEnv);
   const app: App = createApp({ cfg, dataDir: ':memory:', startScheduler: false, demoStepMs: 5 });
   const dist = mkdtempSync(join(tmpdir(), 'dist-'));
   writeFileSync(join(dist, 'index.html'), '<!doctype html><title>MONO</title>');
@@ -81,6 +81,25 @@ describe('1. Host-header allowlist (DNS-rebinding defence)', () => {
     }
     expect((await raw(port, { path: '/api/auth', headers: { host: '100.64.0.6' } })).status).toBe(421);
   });
+  it('MONO_PUBLIC_HOST (tailscale serve name) is allowlisted without moving the bind address, and needs a token', async () => {
+    const PUB = 'my-mac.tail1234.ts.net';
+    expect(() => loadConfig({ MONO_PUBLIC_HOST: PUB } as NodeJS.ProcessEnv)).toThrow(/MONO_ACCESS_TOKEN/);
+    expect(() => loadConfig({ MONO_PUBLIC_HOST: PUB, MONO_ACCESS_TOKEN: 'short' } as NodeJS.ProcessEnv)).toThrow(/MONO_ACCESS_TOKEN/);
+    for (const bad of [`https://${PUB}`, `${PUB}:443`, `${PUB}/x`, '*.ts.net', 'localhost', '0.0.0.0 x']) {
+      expect(() => loadConfig({ MONO_PUBLIC_HOST: bad, MONO_ACCESS_TOKEN: TOKEN } as NodeJS.ProcessEnv), bad).toThrow(/MONO_PUBLIC_HOST/);
+    }
+    const cfg = loadConfig({ MONO_PUBLIC_HOST: ` ${PUB.toUpperCase()} `, MONO_ACCESS_TOKEN: TOKEN } as NodeJS.ProcessEnv);
+    expect(cfg).toMatchObject({ host: '127.0.0.1', publicHost: PUB });
+    expect([...allowedHosts(cfg.host, cfg.publicHost)]).toEqual(['127.0.0.1', 'localhost', '[::1]', '127.0.0.1', PUB].filter((h, i, a) => a.indexOf(h) === i));
+
+    const { port } = await boot(TOKEN, '127.0.0.1', { MONO_PUBLIC_HOST: PUB });
+    expect((await raw(port, { path: '/api/auth', headers: { host: PUB } })).status).toBe(200);
+    expect((await raw(port, { path: '/api/auth', headers: { host: 'other-mac.tail1234.ts.net' } })).status).toBe(421);
+    // the phone's login: Host and Origin are the https *.ts.net name (tailscale serve forwards them unchanged)
+    const login = await raw(port, { method: 'POST', path: '/api/login', body: JSON.stringify({ token: TOKEN }), headers: { host: PUB, origin: `https://${PUB}` } });
+    expect(login.status).toBe(200);
+    expect((await raw(port, { method: 'POST', path: '/api/login', body: JSON.stringify({ token: TOKEN }), headers: { host: PUB, origin: 'https://evil.ts.net' } })).status).toBe(403);
+  });
   it('checks Origin against the allowlist, not against the incoming Host header', async () => {
     const { j, port } = await boot(null);
     const body = '{"on":true}';
@@ -137,7 +156,7 @@ describe('3. Random server-side sessions', () => {
     expect((await (await j('/api/auth', { headers: { cookie: cookiePair(c1) } })).json())).toEqual({ required: true, authenticated: true });
     // tampered / foreign ids never authenticate
     expect((await j('/api/state', { headers: { cookie: `mono_session=${'f'.repeat(64)}` } })).status).toBe(401);
-    expect((await j('/api/state', { headers: { cookie: `mono_session=${id1.slice(0, 63)}0` } })).status).toBe(401);
+    expect((await j('/api/state', { headers: { cookie: `mono_session=${id1.slice(0, 63)}${id1.endsWith('0') ? '1' : '0'}` } })).status).toBe(401);
     expect((await j('/api/state', { headers: { cookie: 'mono_session=not-hex' } })).status).toBe(401);
     // logout revokes only the current session and clears the cookie
     const out = await j('/api/logout', { method: 'POST', body: '{}', headers: { cookie: cookiePair(c1) } });
@@ -307,9 +326,50 @@ describe('8. Hash-chained audit log', () => {
     expect(v.valid).toBe(false); expect(v.brokenAtId).toBe((app.db.prepare('SELECT id FROM audit_log WHERE rowid = 1').get() as { id: string }).id);
     expect(app.system().auditChainValid).toBe(false);
     app.db.exec("UPDATE audit_log SET detail = '{\"maxDailyCostUsd\":3}' WHERE rowid = 1");
-    app.db.exec('DELETE FROM audit_log WHERE rowid = 2');
-    expect(verifyAuditChain(app.db).valid).toBe(true); // truncation from the tail is undetectable by a chain alone — documented limitation
+    app.db.exec('DELETE FROM audit_log WHERE rowid = (SELECT MAX(rowid) FROM audit_log)');
+    // the remaining rows still form a valid chain; the head checkpoint is what exposes the truncation
+    expect(verifyAuditChain(app.db)).toMatchObject({ valid: false, headMismatch: true });
+    expect(app.system().auditChainValid).toBe(false);
     app.close();
+  });
+  it('the head checkpoint follows every append and can only move forward', () => {
+    const app = makeApp();
+    app.guard.update({ maxDailyCostUsd: 3 }, 'user');
+    const n = (app.db.prepare('SELECT COUNT(*) AS n FROM audit_log').get() as { n: number }).n;
+    const tip = (app.db.prepare('SELECT hash FROM audit_log ORDER BY rowid DESC LIMIT 1').get() as { hash: string }).hash;
+    expect(app.db.prepare('SELECT entries, hash FROM audit_head').get()).toEqual({ entries: n, hash: tip });
+    expect(verifyAuditChain(app.db)).toEqual({ valid: true, entries: n });
+    expect(() => app.db.exec('UPDATE audit_head SET entries = entries - 1')).toThrow(/only moves forward/);
+    expect(() => app.db.exec("UPDATE audit_head SET hash = 'x'")).toThrow(/only moves forward/);
+    expect(() => app.db.exec("UPDATE audit_head SET entries = entries + 1, hash = 'x'")).toThrow(/only moves forward/);
+    expect(() => app.db.exec('DELETE FROM audit_head')).toThrow(/only moves forward/);
+    expect(() => app.db.exec(`INSERT INTO audit_head (id, entries, hash) VALUES (2, 0, '${AUDIT_GENESIS}')`)).toThrow(/only moves forward/);
+    app.close();
+  });
+  it('v3 re-chains rows an older scheduler wrote without a hash, but never launders an edited row', () => {
+    const v2db = (tamper: boolean) => {
+      const dir = mkdtempSync(join(tmpdir(), 'monohq-v2-'));
+      const legacy = new DatabaseSync(join(dir, 'mono.db'));
+      legacy.exec('CREATE TABLE schema_version (v INTEGER NOT NULL)');
+      legacy.exec(MIGRATIONS[0] as string);
+      (MIGRATIONS[1] as (db: DatabaseSync) => void)(legacy);
+      legacy.prepare('INSERT INTO schema_version (v) VALUES (2)').run();
+      appendAudit(legacy, 'user', 'guardrails.update', '{"maxDailyCostUsd":3}');
+      legacy.prepare("INSERT INTO audit_log (id, at, actor, action, detail) VALUES ('m1', '2026-02-01T00:00:00.000Z', 'scheduler', 'automation.missed', 'daily missed')").run(); // the old bug
+      appendAudit(legacy, 'user', 'automation.enable', 'weekly-money-review');
+      if (tamper) legacy.exec("DROP TRIGGER audit_no_update; UPDATE audit_log SET detail = '{\"maxDailyCostUsd\":300}' WHERE rowid = 1");
+      legacy.close();
+      return openDb(dir);
+    };
+    const ok = v2db(false);
+    expect(verifyAuditChain(ok)).toEqual({ valid: true, entries: 4 });
+    expect((ok.prepare("SELECT detail FROM audit_log WHERE action = 'audit.repair'").get() as { detail: string }).detail).toMatch(/re-chained 2 audit rows/);
+    expect(() => ok.exec("UPDATE audit_log SET detail = 'x'")).toThrow(/append-only/); // the trigger is back after the repair
+    ok.close();
+    const bad = v2db(true);
+    expect(verifyAuditChain(bad).valid).toBe(false);
+    expect(bad.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'audit.repair'").get()).toEqual({ n: 0 });
+    bad.close();
   });
   it('migration backfills a v1 database so pre-existing rows join the chain', () => {
     const dir = mkdtempSync(join(tmpdir(), 'monohq-mig-'));
@@ -320,7 +380,7 @@ describe('8. Hash-chained audit log', () => {
     legacy.prepare("INSERT INTO audit_log (id, at, actor, action, detail) VALUES ('a1','2026-01-01T00:00:00.000Z','user','x','1'), ('a2','2026-01-02T00:00:00.000Z','user','y','2')").run();
     legacy.close();
     const db = openDb(dir);
-    expect(verifyAuditChain(db)).toEqual({ valid: true, entries: 2 });
+    expect(verifyAuditChain(db)).toEqual({ valid: true, entries: 2 }); // v3 seeds the head checkpoint from the backfilled chain
     expect((db.prepare('SELECT prev_hash FROM audit_log WHERE id = ?').get('a1') as { prev_hash: string }).prev_hash).toBe(AUDIT_GENESIS);
     expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
     db.close();

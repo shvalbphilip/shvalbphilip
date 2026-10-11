@@ -7,6 +7,15 @@ const root = new URL('../../..', import.meta.url).pathname;
 const settled = (app: ReturnType<typeof makeApp>, id: string) => waitFor(() => { const t = app.tasks.get(id); return t && t.status !== 'queued' && t.status !== 'running' ? t : undefined; });
 
 describe('safe defaults (explicit assertions)', () => {
+  it('.env.example lists every variable config.ts reads, and used as-is it yields the safe defaults', () => {
+    const example = Object.fromEntries(readFileSync(`${root}MONO-HQ/.env.example`, 'utf8').split('\n')
+      .filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    const read = [...readFileSync(`${root}MONO-HQ/server/src/config.ts`, 'utf8').matchAll(/env\.([A-Z_]+)/g)].map((m) => m[1]!);
+    expect(Object.keys(example).sort()).toEqual([...new Set(read)].sort());
+    const cfg = loadConfig(example as NodeJS.ProcessEnv);
+    expect(cfg).toMatchObject({ host: '127.0.0.1', port: 8787, accessToken: null, claudeBin: 'claude' });
+    expect(cfg.defaults).toMatchObject({ dryRun: true, maxDailyCostUsd: 2, maxMonthlyCostUsd: 25, maxConcurrentAiJobs: 2 });
+  });
   it('DRY_RUN is on unless DRY_RUN=false is set explicitly; any other value keeps it on', () => {
     expect(loadConfig({} as NodeJS.ProcessEnv).defaults.dryRun).toBe(true);
     for (const v of ['', '0', 'no', 'FALSE', 'off']) expect(loadConfig({ DRY_RUN: v } as NodeJS.ProcessEnv).defaults.dryRun, `DRY_RUN=${v}`).toBe(true);

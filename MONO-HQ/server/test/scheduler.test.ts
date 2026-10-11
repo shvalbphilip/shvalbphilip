@@ -70,6 +70,7 @@ describe('scheduler behaviour', () => {
     const wokeUpLate = new Date(due.getTime() + 6 * 3600_000);
     expect(app.scheduler.tick(wokeUpLate)).toEqual([]);
     expect(app.system().auditLog.some((l) => l.action === 'automation.missed')).toBe(true);
+    expect(app.system().auditChainValid).toBe(true); // the missed-run entry joins the hash chain (it used to be written unhashed)
     app.close();
   });
 });

@@ -28,16 +28,16 @@ export function hostnameOf(hostHeader: string | undefined): string | null {
   return /^[a-z0-9.-]+$/.test(name) ? name : null;
 }
 
-/** Hosts a request may be addressed to: loopback names plus the configured bind host (bracketed if IPv6). */
-export function allowedHosts(configuredHost: string): Set<string> {
+/** Hosts a request may be addressed to: loopback names, the configured bind host (bracketed if IPv6) and MONO_PUBLIC_HOST. */
+export function allowedHosts(configuredHost: string, publicHost: string | null = null): Set<string> {
   const cfg = configuredHost.toLowerCase();
   const bind = cfg.includes(':') && !cfg.startsWith('[') ? `[${cfg}]` : cfg;
-  return new Set(['127.0.0.1', 'localhost', '[::1]', bind]);
+  return new Set(['127.0.0.1', 'localhost', '[::1]', bind, ...(publicHost ? [publicHost] : [])]);
 }
 
 export function createHttpServer(app: App, distDir = fileURLToPath(new URL('../../dist', import.meta.url))): Server {
   const token = app.cfg.accessToken;
-  const hosts = allowedHosts(app.cfg.host);
+  const hosts = allowedHosts(app.cfg.host, app.cfg.publicHost);
   const attempts = new Map<string, { n: number; reset: number }>();
   const sseClients = new Set<ServerResponse>();
 

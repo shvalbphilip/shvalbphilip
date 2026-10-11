@@ -31,9 +31,12 @@ export function appendAudit(db: Db, actor: string, action: string, detail: strin
     .run(newId('aud'), at, actor, action, d, prev, auditHash(prev, at, actor, action, d));
 }
 
-export interface AuditChainReport { valid: boolean; entries: number; brokenAtId?: string }
+export interface AuditChainReport { valid: boolean; entries: number; brokenAtId?: string; headMismatch?: boolean }
 
-/** Re-derives every hash in insertion order and checks each link points at its predecessor. */
+/**
+ * Re-derives every hash in insertion order and checks each link points at its predecessor, then compares the chain's
+ * length and tip with the persisted head checkpoint (audit_head), which catches truncation of the newest rows.
+ */
 export function verifyAuditChain(db: Db): AuditChainReport {
   const rows = db.prepare('SELECT rowid, id, at, actor, action, detail, prev_hash, hash FROM audit_log ORDER BY rowid ASC').all() as unknown as AuditRow[];
   let prev = AUDIT_GENESIS;
@@ -41,7 +44,31 @@ export function verifyAuditChain(db: Db): AuditChainReport {
     if (r.prev_hash !== prev || r.hash !== auditHash(prev, r.at, r.actor, r.action, r.detail)) return { valid: false, entries: rows.length, brokenAtId: r.id };
     prev = r.hash;
   }
+  const head = db.prepare('SELECT entries, hash FROM audit_head WHERE id = 1').get() as { entries: number; hash: string } | undefined;
+  if (!head || head.entries !== rows.length || head.hash !== prev) return { valid: false, entries: rows.length, headMismatch: true };
   return { valid: true, entries: rows.length };
+}
+
+/**
+ * Migration helper for rows inserted without a hash (the v2 scheduler bypassed appendAudit). Rows written after such a
+ * row were linked to GENESIS, because lastHash() treats a NULL hash as the start of a chain. The whole log is
+ * re-chained only if every hashed row still matches its own content and links to its predecessor's hash (or to
+ * GENESIS right after an unhashed row). Otherwise nothing is touched and the chain keeps reporting the break.
+ * Returns the number of rows rewritten.
+ */
+export function repairUnhashedAuditRows(db: Db): number {
+  const rows = db.prepare('SELECT rowid, id, at, actor, action, detail, prev_hash, hash FROM audit_log ORDER BY rowid ASC').all() as unknown as AuditRow[];
+  if (!rows.some((r) => r.hash === null)) return 0;
+  let expectedPrev: string = AUDIT_GENESIS;
+  for (const r of rows) {
+    if (r.hash === null) { expectedPrev = AUDIT_GENESIS; continue; }
+    if (r.prev_hash !== expectedPrev || r.hash !== auditHash(r.prev_hash, r.at, r.actor, r.action, r.detail)) return 0;
+    expectedPrev = r.hash;
+  }
+  db.exec('DROP TRIGGER IF EXISTS audit_no_update');
+  const n = backfillAuditChain(db);
+  db.exec("CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;");
+  return n;
 }
 
 /** Migration helper: gives rows written before hashing existed a valid chain, in insertion order. */

@@ -2,6 +2,8 @@ import type { Guardrails } from '../../shared/contract.ts';
 
 export interface AppConfig {
   host: string;
+  /** Extra hostname clients may use (e.g. a `tailscale serve` *.ts.net name). Allowlist only: never a bind address. */
+  publicHost: string | null;
   port: number;
   dataDir: string;
   accessToken: string | null;
@@ -19,11 +21,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const host = env.MONO_HOST || '127.0.0.1';
   const accessToken = env.MONO_ACCESS_TOKEN || null;
   const loopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
-  if (!loopback && (!accessToken || accessToken.length < 16)) {
-    throw new Error('MONO_HOST is not loopback: set MONO_ACCESS_TOKEN (>=16 chars) before exposing MONO HQ on a network.');
+  const publicHost = env.MONO_PUBLIC_HOST ? env.MONO_PUBLIC_HOST.trim().toLowerCase() : null;
+  if (publicHost && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(publicHost)) {
+    throw new Error('MONO_PUBLIC_HOST must be a bare hostname such as my-mac.tailnet-name.ts.net (no scheme, port, path or wildcard).');
+  }
+  if ((!loopback || publicHost) && (!accessToken || accessToken.length < 16)) {
+    throw new Error('MONO_HOST is not loopback (or MONO_PUBLIC_HOST is set): set MONO_ACCESS_TOKEN (>=16 chars) before exposing MONO HQ on a network.');
   }
   return {
     host,
+    publicHost,
     port: num(env.MONO_PORT, 8787),
     dataDir: env.MONO_DATA_DIR || new URL('../../data', import.meta.url).pathname,
     accessToken,
