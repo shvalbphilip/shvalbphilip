@@ -347,7 +347,7 @@ describe('9. Supply-chain and secret scanning', () => {
     const planted = [
       ['key.txt', `token=${['sk', 'ant', 'api03', 'abcdefghijklmnopqrstuvwxyz'].join('-')}`],
       ['iban.md', ['IL62', '0108', '0000', '0009', '9999', '999'].join(' ')],
-      ['card.csv', 'desc,card\nx,4111 1111 1111 1111'], // passes Luhn
+      ['card.csv', `desc,card\nx,${['4111', '1111', '1111', '1111'].join(' ')}`], // passes Luhn; assembled so this file itself stays clean
       ['svg.tsx', '<path d="M82 92 C78 106 86 110 97 110" />'], // digit runs that are not a card: must NOT be flagged
       ['ok.ts', 'const ts = 1700000000123; const big = 4580123456789012;'], // 13+ digits failing Luhn: not flagged
     ] as const;
