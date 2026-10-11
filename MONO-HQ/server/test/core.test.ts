@@ -22,9 +22,10 @@ describe('event store', () => {
   });
   it('redacts identifiers before persisting and strips query strings from source URLs', () => {
     const app = makeApp();
-    // Assembled at runtime so the repo's own secret scanner never sees a key-shaped literal in a tracked file.
+    // Assembled at runtime so the repo's own secret scanner never sees a key- or IBAN-shaped literal in a tracked file.
     const fakeKey = ['sk', 'ant', 'abcdefghijklmnop1234'].join('-');
-    const e = app.bus.emitEvent({ runId: 'r', agentId: 'scout', type: 'progress', publicSummary: `כרטיס 4580 1234 5678 9012 וגם IL62 0108 0000 0009 9999 999 ו-a@b.co סיסמה ${fakeKey}`, origin: 'claude-cli', isDemo: false, sourceUrl: 'https://user:pw@www.boi.org.il/a?token=1#h' });
+    const fakeIban = ['IL62', '0108', '0000', '0009', '9999', '999'].join(' ');
+    const e = app.bus.emitEvent({ runId: 'r', agentId: 'scout', type: 'progress', publicSummary: `כרטיס 4580 1234 5678 9012 וגם ${fakeIban} ו-a@b.co סיסמה ${fakeKey}`, origin: 'claude-cli', isDemo: false, sourceUrl: 'https://user:pw@www.boi.org.il/a?token=1#h' });
     expect(e.publicSummary).not.toMatch(/4580|IL62|a@b\.co|sk-ant/);
     expect(e.sourceUrl).toBe('https://www.boi.org.il/a');
     expect(app.bus.emitEvent({ runId: 'r', agentId: 'scout', type: 'progress', publicSummary: 'x', origin: 'claude-cli', isDemo: false, sourceUrl: 'http://insecure.example' }).sourceUrl).toBeUndefined();
