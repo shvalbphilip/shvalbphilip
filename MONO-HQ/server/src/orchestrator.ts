@@ -143,6 +143,12 @@ export class Orchestrator {
         this.d.tasks.setStep(id, idx, 'running');
 
         if (wf.kind === 'resolve-duplicates') {
+          const ap = task.approvalId ? this.getApproval(task.approvalId) : undefined;
+          if (ap?.status !== 'approved') {
+            if (ap?.status === 'pending') this.d.db.prepare("UPDATE approvals SET status = 'expired', decided_at = ? WHERE id = ?").run(nowIso(), ap.id);
+            this.d.tasks.setStep(id, idx, 'failed');
+            return this.fail(task, stepDef.agentId, 'כתיבה מבוקרת דורשת אישור שאושר — לא בוצע שינוי', 'approval-missing');
+          }
           const n = resolveDuplicates(this.d.db, suspectedDuplicates(this.d.db).map((x) => x.txId), 'confirmed', task.approvalId ?? 'unknown');
           out[idx] = { summaryHe: `סומנו ${n} כפילויות מאומתות (נרשם ביומן הביקורת)`, data: { confirmed: n } };
           this.d.tasks.setStep(id, idx, 'completed');
@@ -193,7 +199,7 @@ export class Orchestrator {
           if (res.failure === 'cancelled') throw new Cancelled();
           return this.fail(task, stepDef.agentId, res.detail ?? 'כשל בריצת AI', res.failure);
         }
-        out[idx] = stepDef.handleAi ? stepDef.handleAi(ctx, res.text) : { summaryHe: clip(res.text, 160), markdown: res.text };
+        out[idx] = stepDef.handleAi ? stepDef.handleAi(ctx, res.text, res) : { summaryHe: clip(res.text, 160), markdown: res.text };
         this.d.tasks.setStep(id, idx, 'completed');
         this.ev(task, stepDef.agentId, 'completed', out[idx]!.summaryHe, 'claude-cli', { modelId: res.observedModels[0], actualCostUsd: res.costUsd });
       }
@@ -257,15 +263,19 @@ export class Orchestrator {
   }
 
   private async runAiStep(task: Task, idx: number, agent: AgentId, prompt: string, estUsd: number, signal: AbortSignal) {
+    // Synchronous with the canStartAi check in execute(): compute this run's budget, then hold it until the run settles.
+    const budgetUsd = Math.min(estUsd, this.d.guard.headroomUsd());
+    const holdKey = `${task.id}:${idx}`;
     this.runningAi++;
     let activity = false;
     const hb = setInterval(() => { if (activity) { activity = false; this.ev(task, agent, 'heartbeat', 'העבודה נמשכת — התקבלה פעילות מהמודל', 'claude-cli'); } }, 30_000);
     hb.unref();
     let announcedModel = false;
     try {
+      this.d.guard.reserve(holdKey, budgetUsd); // released in finally, on every exit path
       this.ev(task, agent, 'started', this.d.tasks.get(task.id)!.steps[idx]!.title, 'claude-cli', { estimatedCostUsd: estUsd });
       const res = await this.d.runner.run({
-        agentId: agent, prompt, maxBudgetUsd: Math.min(estUsd, this.d.guard.headroomUsd()), timeoutMs: this.d.guard.get().maxJobMinutes * 60_000,
+        agentId: agent, prompt, maxBudgetUsd: budgetUsd, timeoutMs: this.d.guard.get().maxJobMinutes * 60_000,
         onActivity: () => { activity = true; },
         onModel: (m) => { if (!announcedModel) { announcedModel = true; this.ev(task, agent, 'progress', `המודל שרץ: ${m}`, 'claude-cli', { modelId: m }); } },
         onTool: (n: ToolNote) => {
@@ -274,20 +284,31 @@ export class Orchestrator {
           else this.ev(task, agent, 'tool_completed', n.failed ? `${label} נכשל` : `${label} הושלם`, 'claude-cli', { toolCategory: label });
         },
       }, signal);
-      if (res.costUsd > 0) {
-        this.d.guard.recordSpend(task.id, res.costUsd, res.observedModels.join(',') || null, false);
-        this.d.db.prepare('UPDATE tasks SET actual_cost_usd = actual_cost_usd + ? WHERE id = ?').run(res.costUsd, task.id);
+      // A run stopped after start-up but before its result line (cancel, kill switch, timeout, model-guard kill) may have
+      // spent money we cannot see: count its whole budget, marked as an estimate. A run that never reached start-up
+      // (missing CLI, crash before init) or was killed at start-up by the tool check made no model request: $0.
+      const unreported = !res.costReported && res.started === true && res.failure !== 'cli-missing' && res.failure !== 'tool-mismatch';
+      const spentUsd = res.costReported ? res.costUsd : unreported ? budgetUsd : 0;
+      if (spentUsd > 0) {
+        this.d.guard.recordSpend(task.id, spentUsd, res.costReported ? (res.observedModels.join(',') || null) : 'unreported-estimate', false);
+        this.d.db.prepare('UPDATE tasks SET actual_cost_usd = actual_cost_usd + ? WHERE id = ?').run(spentUsd, task.id);
       }
       if (res.ok && !res.observedModels.every((m) => m === REQUIRED_MODEL || m.startsWith(`${REQUIRED_MODEL}[`))) {
         return { ...res, ok: false, failure: 'model-mismatch' as const, detail: 'המודל שרץ אינו claude-sonnet-5-5' };
       }
       return res;
-    } finally { clearInterval(hb); this.runningAi--; }
+    } finally { clearInterval(hb); this.runningAi--; this.d.guard.release(holdKey); }
   }
 
   /* ---------- user controls ---------- */
-  cancel(id: string): Task {
+  /** Demo tasks belong to the demo script; user controls never touch them (they would emit real-mode events). */
+  private realTask(id: string): Task {
     const t = this.d.tasks.get(id); if (!t) throw new Error('task not found');
+    if (t.isDemo) throw new Error('משימת הדגמה — נשלטת רק דרך כפתור ההדגמה');
+    return t;
+  }
+  cancel(id: string): Task {
+    const t = this.realTask(id);
     const ac = this.live.get(id);
     if (ac && t.status === 'running') { ac.abort(new Error('cancel')); return this.d.tasks.get(id)!; }
     const c = this.d.tasks.transition(id, 'cancelled', { blocker: 'בוטל על ידי המשתמש' });
@@ -295,7 +316,7 @@ export class Orchestrator {
     return c;
   }
   pause(id: string): Task {
-    const t = this.d.tasks.get(id); if (!t) throw new Error('task not found');
+    const t = this.realTask(id);
     const ac = this.live.get(id);
     if (ac && t.status === 'running') { this.d.tasks.transition(id, 'paused', { blocker: 'הושהה על ידי המשתמש' }); ac.abort(new Error('pause')); }
     else this.d.tasks.transition(id, 'paused', { blocker: 'הושהה על ידי המשתמש' });
@@ -303,12 +324,14 @@ export class Orchestrator {
     return p;
   }
   resume(id: string): Task {
+    // Only a paused task resumes. A task awaiting approval moves on only through decideApproval().
+    if (this.realTask(id).status !== 'paused') throw new Error('אפשר לחדש רק משימה מושהית');
     const t = this.d.tasks.transition(id, 'queued', { blocker: null });
     this.ev(t, t.leadAgent, 'queued', 'חודשה — חזרה לתור', 'user'); this.pump(); return t;
   }
   /** Bounded manual retry: only failed tasks, only while attempts <= maxRetries. */
   retry(id: string): Task {
-    const t = this.d.tasks.get(id); if (!t) throw new Error('task not found');
+    const t = this.realTask(id);
     const wf = WORKFLOWS[t.kind]!;
     if (wf.needsApproval) throw new Error('משימות עם כתיבה מבוקרת לא מנסות שוב אוטומטית — צור משימה חדשה');
     if (t.status !== 'awaiting_input') {

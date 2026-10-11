@@ -90,8 +90,8 @@ export function AutomationsView() {
               ) : null}
               <div className="actions">
                 {a.enabled
-                  ? <button className="btn btn-sm btn-danger-ghost" disabled={busy !== null} onClick={() => act(a, 'disable')}>{busy === `${a.id}:disable` ? '…' : 'כבה'}</button>
-                  : <button className="btn btn-sm btn-primary" disabled={busy !== null} onClick={() => act(a, 'enable')}>{busy === `${a.id}:enable` ? '…' : 'הפעל (דורש אישור)'}</button>}
+                  ? <button className="btn btn-sm btn-danger-ghost" disabled={busy !== null || mode === 'demo'} onClick={() => act(a, 'disable')}>{busy === `${a.id}:disable` ? '…' : 'כבה'}</button>
+                  : <button className="btn btn-sm btn-primary" disabled={busy !== null || mode === 'demo'} onClick={() => act(a, 'enable')}>{busy === `${a.id}:enable` ? '…' : 'הפעל (דורש אישור)'}</button>}
                 <button className="btn btn-sm" disabled={busy !== null || mode === 'demo'} onClick={() => act(a, 'run-now')}>{busy === `${a.id}:run-now` ? '…' : 'הרץ עכשיו'}</button>
               </div>
             </li>

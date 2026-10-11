@@ -41,8 +41,14 @@ export function extractJson(text: string): unknown {
 export class ResearchStore {
   constructor(private db: Db) {}
 
-  /** Validates (GUARDIAN-style, deterministic) and stores items. Returns counts incl. rejects. */
-  ingest(taskId: string, modelText: string): { stored: number; rejected: number; official: number } {
+  /**
+   * Validates (GUARDIAN-style, deterministic) and stores items. Returns counts incl. rejects.
+   * Items citing a non-official or non-https URL are rejected. An official-domain item counts as `official` only when
+   * SCOUT actually fetched a page on that host in this run (fetchedUrls from the CLI stream); otherwise `unverified`.
+   */
+  ingest(taskId: string, modelText: string, fetchedUrls: readonly string[] = []): { stored: number; rejected: number; official: number } {
+    const fetchedHosts = new Set<string>();
+    for (const f of fetchedUrls) { try { fetchedHosts.add(new URL(f).hostname.toLowerCase()); } catch { /* ignore */ } }
     const parsed = ResearchOutputSchema.safeParse(extractJson(modelText));
     if (!parsed.success) return { stored: 0, rejected: -1, official: 0 };
     let stored = 0, rejected = 0, official = 0;
@@ -52,8 +58,8 @@ export class ResearchStore {
       if (!v.success) { rejected++; continue; }
       const it = v.data;
       const url = new URL(it.sourceUrl); url.hash = ''; url.username = ''; url.password = '';
-      const off = isOfficialSource(url.toString());
-      if (url.protocol !== 'https:') { rejected++; continue; }
+      if (url.protocol !== 'https:' || !isOfficialSource(url.toString())) { rejected++; continue; }
+      const off = fetchedHosts.has(url.hostname.toLowerCase());
       const hash = createHash('sha256').update(`${url}|${it.summaryHe.toLowerCase().replace(/\s+/g, ' ')}`).digest('hex');
       const prev = this.db.prepare('SELECT content_hash FROM research_items WHERE source_url = ? ORDER BY checked_at DESC LIMIT 1').get(url.toString()) as { content_hash: string } | undefined;
       const change = !prev ? 'new' : prev.content_hash === hash ? 'unchanged' : 'changed';

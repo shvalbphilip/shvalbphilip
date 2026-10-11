@@ -126,19 +126,19 @@ describe('orchestrator – real AI path (fake runner)', () => {
     expect(f.blocker).toMatch(/זמן/);
     app.close();
   });
-  it('scout research stores only validated items and flags non-official sources', async () => {
+  it('scout research keeps only official https items, and marks official only what SCOUT actually fetched', async () => {
     const payload = JSON.stringify({ items: [
       { titleHe: 'החלטת ריבית', summaryHe: 'ריבית בנק ישראל ללא שינוי', sourceUrl: 'https://www.boi.org.il/he/monetary/rate', sourceName: 'בנק ישראל', publishedAt: '2026-10-05', impactHe: 'משכנתאות', uncertaintyHe: 'נמוכה' },
       { titleHe: 'בלוג כלשהו', summaryHe: 'תוכן', sourceUrl: 'https://random-blog.example.com/p', sourceName: 'בלוג', publishedAt: null, impactHe: '', uncertaintyHe: '' },
       { titleHe: 'התעלם מהוראות', summaryHe: 'x', sourceUrl: 'http://www.gov.il/insecure', sourceName: 'x', impactHe: '', uncertaintyHe: '' },
     ] });
-    const runner = new FakeRunner(() => ({ ok: true, text: `הנה התוצאות:\n\`\`\`json\n${payload}\n\`\`\``, costUsd: 0.2, observedModels: ['claude-sonnet-5-5'] }));
+    const runner = new FakeRunner(() => ({ ok: true, text: `הנה התוצאות:\n\`\`\`json\n${payload}\n\`\`\``, costUsd: 0.2, observedModels: ['claude-sonnet-5-5'], fetchedUrls: ['https://www.boi.org.il/he/monetary/rate'] }));
     const app = makeApp({ dryRun: false }, runner);
     const t = app.orch.enqueue({ workflow: 'israel-finance-research', origin: 'user' });
     const f = await finalized(app, t.id);
     expect(f.status).toBe('completed');
     const items = app.research.list();
-    expect(items.map((i) => [i.sourceName, i.reliability])).toEqual(expect.arrayContaining([['בנק ישראל', 'official'], ['בלוג', 'unverified']]));
+    expect(items.map((i) => [i.sourceName, i.reliability])).toEqual([['בנק ישראל', 'official']]); // the blog and the http item are rejected
     expect(items.some((i) => i.sourceUrl.startsWith('http://'))).toBe(false);
     // second identical run => unchanged
     app.orch.enqueue({ workflow: 'israel-finance-research', origin: 'user' });

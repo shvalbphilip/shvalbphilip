@@ -58,6 +58,8 @@ export interface Task {
   attempts: number;
   estimatedCostUsd: number;
   actualCostUsd: number;
+  /** true when part of actualCostUsd is a held budget charged because the CLI never reported the run's cost */
+  costEstimated?: boolean;
   steps: TaskStep[];
   resultSummary?: string; // Hebrew
   blocker?: string; // Hebrew

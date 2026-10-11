@@ -6,15 +6,29 @@ import { newId, nowIso } from './util.ts';
 
 /* ---------- parsing ---------- */
 
+/** The header line decides the delimiter: whichever of , ; or tab occurs most outside quotes (comma on a tie or none). */
+export function detectDelimiter(text: string): ',' | ';' | '\t' {
+  const counts = { ',': 0, ';': 0, '\t': 0 } as Record<',' | ';' | '\t', number>;
+  let q = false;
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim() !== '') ?? ''; // leading blank lines don't decide
+  for (const c of firstLine) {
+    if (c === '"') q = !q;
+    else if (!q && (c === '\n' || c === '\r')) break;
+    else if (!q && (c === ',' || c === ';' || c === '\t')) counts[c]++;
+  }
+  return counts[';'] > counts[','] && counts[';'] >= counts['\t'] ? ';' : counts['\t'] > counts[','] ? '\t' : ',';
+}
+
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = []; let row: string[] = []; let cur = ''; let q = false;
   const src = text.replace(/^﻿/, '');
+  const delim = detectDelimiter(src);
   for (let i = 0; i < src.length; i++) {
     const c = src[i]!;
     if (q) {
       if (c === '"') { if (src[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c;
     } else if (c === '"' && cur === '') q = true;
-    else if (c === ',' || c === ';' || c === '\t') { row.push(cur); cur = ''; }
+    else if (c === delim) { row.push(cur); cur = ''; }
     else if (c === '\n' || c === '\r') { if (c === '\r' && src[i + 1] === '\n') i++; row.push(cur); if (row.some((x) => x.trim() !== '')) rows.push(row); row = []; cur = ''; }
     else cur += c;
   }
@@ -64,6 +78,15 @@ const HEADERS: Record<string, string[]> = {
 };
 const norm = (h: string) => h.trim().toLowerCase().replace(/^﻿/, '');
 
+/** ILS spellings seen in Israeli exports; anything else must be a 3-letter ISO code. */
+export function normCurrency(raw: string): string {
+  const c = raw.trim().replace(/["״']/g, '').toUpperCase();
+  return c === '' || c === 'ILS' || c === 'NIS' || c === 'שח' || c === '₪' ? 'ILS' : c;
+}
+
+/** Rows that count as shekel spending in budgets and in GUARDIAN's independent check. */
+export const SPEND_SQL = `kind IN ('expense','refund','loan-interest') AND COALESCE(dup_status,'') <> 'confirmed' AND currency = 'ILS'`;
+
 /* ---------- classification ---------- */
 
 const CATEGORY_RULES: Array<[RegExp, string]> = [
@@ -77,14 +100,32 @@ const CATEGORY_RULES: Array<[RegExp, string]> = [
   [/ריבית|interest/i, 'ריבית'],
 ];
 
+/**
+ * Whole-word matcher. Substring matching misfired on real descriptions ("ביטוח" and "ביטול" contained ביט,
+ * "DIRECT DEBIT" contained bit). A single Hebrew prefix letter (ב ל ה ו מ ש כ) is allowed, so "בביט" still matches.
+ */
+const word = (alts: string) => new RegExp(`(?<![\\p{L}\\p{N}])[בלהומשכ]?(?:${alts})(?![\\p{L}\\p{N}])`, 'iu');
+const RE_REFUND = word('החזר|זיכוי|refund|chargeback');
+const RE_INTEREST = word('ריבית|interest');
+const RE_PRINCIPAL = word('קרן|principal');
+/** Card issuers as they appear on the bank side; matched alone they mean a card bill being paid. */
+const RE_ISSUER = word('ישראכרט|isracard|כאל|cal|ויזה כאל|מקס איט|max it|לאומי קארד|leumi card|דיינרס|diners|אמריקן אקספרס|american express|amex');
+const RE_CARD_WORD = word('ויזה|visa|mastercard|מסטרקארד|מקס|max|כרטיס|כרטיס אשראי|כרטיסי אשראי');
+/** Fees charged by an issuer are spending, not a bill payment ("דמי כרטיס ישראכרט"). */
+const RE_FEE = word('דמי|דמי כרטיס|עמלה|עמלת|fee|fees');
+const RE_PAYMENT = word('חיוב|חיוב כרטיס|settle|settlement|payment|תשלום');
+const RE_TRANSFER = word('העברה|transfer|bit|ביט|paybox|פייבוקס');
+/** Salary words; "שכר דירה" is rent, not salary. */
+const RE_SALARY = /(?<![\p{L}\p{N}])[בלהומשכ]?(?:משכורת|salary|שכר(?!\s*דירה))(?![\p{L}\p{N}])/iu;
+
 export function classify(description: string, amountAgorot: number): { kind: Transaction['kind']; category: string } {
   const d = description;
-  if (/החזר|זיכוי|refund|chargeback/i.test(d) && amountAgorot > 0) return { kind: 'refund', category: categoryOf(d) };
-  if (/ריבית|interest/i.test(d) && amountAgorot < 0) return { kind: 'loan-interest', category: 'ריבית' };
-  if (/קרן|principal/i.test(d) && amountAgorot < 0) return { kind: 'loan-principal', category: 'החזר הלוואה' };
-  if (/כאל|ויזה|מקס|max|isracard|ישראכרט|דיינרס|cal\b|visa|mastercard|חיוב כרטיס/i.test(d) && /חיוב|settle|payment|תשלום/i.test(d) && amountAgorot < 0) return { kind: 'card-settlement', category: 'סילוק כרטיס' };
-  if (/העברה|transfer|bit|ביט|paybox|פייבוקס/i.test(d) && !/שכר|משכורת|salary/i.test(d)) return { kind: 'transfer', category: 'העברות' };
-  if (amountAgorot > 0) return { kind: 'income', category: /שכר|משכורת|salary/i.test(d) ? 'הכנסה' : 'הכנסה אחרת' };
+  if (RE_REFUND.test(d) && amountAgorot > 0) return { kind: 'refund', category: categoryOf(d) };
+  if (RE_INTEREST.test(d) && amountAgorot < 0) return { kind: 'loan-interest', category: 'ריבית' };
+  if (RE_PRINCIPAL.test(d) && amountAgorot < 0) return { kind: 'loan-principal', category: 'החזר הלוואה' };
+  if (amountAgorot < 0 && !RE_FEE.test(d) && (RE_ISSUER.test(d) || (RE_CARD_WORD.test(d) && RE_PAYMENT.test(d)))) return { kind: 'card-settlement', category: 'סילוק כרטיס' };
+  if (RE_TRANSFER.test(d) && !RE_SALARY.test(d)) return { kind: 'transfer', category: 'העברות' };
+  if (amountAgorot > 0) return { kind: 'income', category: RE_SALARY.test(d) ? 'הכנסה' : 'הכנסה אחרת' };
   return { kind: 'expense', category: categoryOf(d) };
 }
 function categoryOf(d: string): string { for (const [re, c] of CATEGORY_RULES) if (re.test(d)) return c; return 'אחר'; }
@@ -137,7 +178,7 @@ export class MoneyStore {
           amt = dr === null || cr === null ? null : Math.abs(cr) - Math.abs(dr);
         }
         if (amt === null || amt === 0) return result.rejected.push({ row: rowNo, reason: 'סכום לא תקין' });
-        const currency = (col.currency !== undefined ? (r[col.currency] ?? '').trim().toUpperCase() : '') || 'ILS';
+        const currency = normCurrency(col.currency !== undefined ? r[col.currency] ?? '' : '');
         if (!/^[A-Z]{3}$/.test(currency)) return result.rejected.push({ row: rowNo, reason: 'מטבע לא תקין' });
         const posting = col.posting !== undefined ? parseDate(r[col.posting] ?? '') : null;
         const reference = col.reference !== undefined ? (r[col.reference] ?? '').trim() : '';
@@ -177,10 +218,11 @@ export class MoneyStore {
     return (this.db.prepare('SELECT * FROM transactions ORDER BY date DESC, created_at DESC LIMIT ?').all(limit) as unknown as TxRow[]).map(toTx);
   }
 
-  /** Spend per category for a YYYY-MM month: expenses and card charges count; transfers, settlements and loan principal do not. */
+  /** Spend per category for a YYYY-MM month, in shekels: expenses, refunds and interest count; transfers, settlements,
+   *  loan principal, confirmed duplicates and non-ILS rows do not (other currencies are never added to ₪ totals). */
   monthlySpend(month: string): Map<string, number> {
     const rows = this.db.prepare(
-      `SELECT category, kind, amount_agorot FROM transactions WHERE substr(date,1,7) = ? AND kind IN ('expense','refund','loan-interest') AND COALESCE(dup_status,'') <> 'confirmed'`,
+      `SELECT category, kind, amount_agorot FROM transactions WHERE substr(date,1,7) = ? AND ${SPEND_SQL}`,
     ).all(month) as Array<{ category: string; kind: string; amount_agorot: number }>;
     const m = new Map<string, number>();
     for (const r of rows) m.set(r.category, (m.get(r.category) ?? 0) - r.amount_agorot);

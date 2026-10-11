@@ -44,7 +44,7 @@ export function KillSwitch({ compact = false }: { compact?: boolean }) {
     <>
       {el}
       <button type="button" className={`kill ${on ? 'kill-on' : ''} ${compact ? 'kill-compact' : ''}`} onClick={click}
-        disabled={!state || busy !== null} aria-pressed={on} title={on ? 'מתג החירום פעיל · לחץ לשחרור' : 'עצירת חירום של כל הסוכנים'}>
+        disabled={!state || busy !== null || (on && mode === 'demo')} aria-pressed={on} title={on ? 'מתג החירום פעיל · לחץ לשחרור' : 'עצירת חירום של כל הסוכנים'}>
         <Icon name="power" size={18} />
         <span>{on ? 'חירום פעיל · שחרר' : 'מתג חירום'}</span>
       </button>
@@ -150,7 +150,7 @@ export function SystemViewPage() {
           <div>
             <div className="card-head"><strong>מצב יבש (DRY_RUN)</strong><Chip tone={g.dryRun ? 'warn' : 'ok'}>{g.dryRun ? 'פעיל · אין קריאות AI' : 'כבוי'}</Chip></div>
             <p className="muted">כשהוא פעיל לא מתבצעות קריאות AI ולא נוצרת עלות.</p>
-            <button className="btn" onClick={toggleDry} disabled={busy !== null}>{g.dryRun ? 'כבה מצב יבש…' : 'הפעל מצב יבש'}</button>
+            <button className="btn" onClick={toggleDry} disabled={busy !== null || mode === 'demo'}>{g.dryRun ? 'כבה מצב יבש…' : 'הפעל מצב יבש'}</button>
           </div>
           <div>
             <div className="card-head"><strong>מתג חירום</strong><Chip tone={g.killSwitch ? 'bad' : 'ok'}>{g.killSwitch ? 'פעיל' : 'כבוי'}</Chip></div>
@@ -186,13 +186,13 @@ export function SystemViewPage() {
           </div>
           <p className="muted small">אלו הגדרות של האפליקציה ואינן מגבלות חיוב של Anthropic.</p>
           <div className="actions">
-            <button className="btn btn-primary" type="submit" disabled={!canSave || busy !== null}>{busy === 'limits' ? 'שומר…' : 'שמור מגבלות'}</button>
+            <button className="btn btn-primary" type="submit" disabled={!canSave || busy !== null || mode === 'demo'}>{busy === 'limits' ? 'שומר…' : 'שמור מגבלות'}</button>
             {dirty ? <button className="btn" type="button" onClick={() => setDirty(false)}>אפס</button> : null}
           </div>
         </form>
       </Section>
 
-      <Section title="אימות מודל" id="model-h" aside={<button className="btn btn-sm" onClick={verify} disabled={busy !== null || g.dryRun} title={g.dryRun ? 'במצב יבש האימות מדולג' : undefined}>{busy === 'verify' ? 'בודק…' : 'אמת עכשיו'}</button>}>
+      <Section title="אימות מודל" id="model-h" aside={<button className="btn btn-sm" onClick={verify} disabled={busy !== null || g.dryRun || mode === 'demo'} title={g.dryRun ? 'במצב יבש האימות מדולג' : undefined}>{busy === 'verify' ? 'בודק…' : 'אמת עכשיו'}</button>}>
         <div className="card">
           <div className="card-head"><strong dir="ltr">{m.required}</strong><Chip tone={modelTone}>{MODEL_STATUS_HE[m.status]}</Chip></div>
           <p className="card-text">{m.detail}</p>

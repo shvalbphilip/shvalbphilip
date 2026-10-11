@@ -1,14 +1,14 @@
 import { useRef, useState } from 'react';
 import type { ImportResult, MoneyFlag, MoneyView } from '../../shared/contract.ts';
 import { api } from './api.ts';
-import { FLAG_HE, KIND_HE, fmtCalendarDate, fmtDateTime, fmtIls } from './format.ts';
+import { FLAG_HE, KIND_HE, fmtCalendarDate, fmtDateTime, fmtMoney } from './format.ts';
 import { useLive, useResource } from './live.tsx';
 import { Bar, Chip, EmptyState, ErrorState, Loading, Section, useRunner, useToast, type Tone } from './ui.tsx';
 
 const flagTone = (f: MoneyFlag): Tone => (f === 'confirmed' ? 'ok' : f === 'reported' ? 'info' : 'warn');
 const FlagChip = ({ flag }: { flag: MoneyFlag }) => <Chip tone={flagTone(flag)}>{FLAG_HE[flag]}</Chip>;
-const Amount = ({ a, signed }: { a: number; signed?: boolean }) => (
-  <bdi dir="ltr" className={`amount ${a < 0 ? 'neg' : a > 0 && signed ? 'pos' : ''}`}>{fmtIls(a, signed)}</bdi>
+const Amount = ({ a, signed, currency }: { a: number; signed?: boolean; currency?: string }) => (
+  <bdi dir="ltr" className={`amount ${a < 0 ? 'neg' : a > 0 && signed ? 'pos' : ''}`}>{fmtMoney(a, currency, signed)}</bdi>
 );
 
 export function MoneyView() {
@@ -88,7 +88,7 @@ export function MoneyView() {
                           <td>{t.description}<div className="muted small">{t.account}{t.possibleDuplicateOf ? ' · ' : ''}{t.possibleDuplicateOf ? <Chip tone="warn">כפילות אפשרית</Chip> : null}</div></td>
                           <td>{t.category}</td>
                           <td>{KIND_HE[t.kind] ?? t.kind}</td>
-                          <td><Amount a={t.amountAgorot} signed /></td>
+                          <td><Amount a={t.amountAgorot} currency={t.currency} signed /></td>
                           <td><FlagChip flag={t.flag} /></td>
                         </tr>
                       ))}
@@ -98,7 +98,7 @@ export function MoneyView() {
                 <ul className="card-list tx-cards">
                   {m.transactions.map((t) => (
                     <li key={t.id} className="card tx-card">
-                      <div className="card-head"><strong>{t.description}</strong><Amount a={t.amountAgorot} signed /></div>
+                      <div className="card-head"><strong>{t.description}</strong><Amount a={t.amountAgorot} currency={t.currency} signed /></div>
                       <div className="card-meta">
                         <span>{fmtCalendarDate(t.date)}</span><span>{t.category}</span><span>{KIND_HE[t.kind] ?? t.kind}</span>
                       </div>

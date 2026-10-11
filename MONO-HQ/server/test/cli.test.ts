@@ -51,7 +51,10 @@ describe('Claude CLI adapter (against a fake claude binary)', () => {
   it('passes a per-agent tool list: scout web-only, mono none at all, others read-only file tools', async () => {
     await run({}, { agentId: 'scout' });
     let a = lastArgs();
-    expect(flag(a, '--tools')).toBe('WebSearch,WebFetch'); expect(flag(a, '--allowedTools')).toBe('WebSearch,WebFetch');
+    expect(flag(a, '--tools')).toBe('WebSearch,WebFetch');
+    // WebFetch is pre-approved only for the official domains (CLI-enforced under dontAsk); never a bare WebFetch
+    expect(flag(a, '--allowedTools')).toBe('WebSearch,WebFetch(domain:boi.org.il),WebFetch(domain:*.boi.org.il),WebFetch(domain:gov.il),WebFetch(domain:*.gov.il)');
+    expect(flag(a, '--allowedTools')!.split(',')).not.toContain('WebFetch');
     await run({}, { agentId: 'mono' });
     a = lastArgs();
     expect(flag(a, '--tools')).toBe(''); expect(a).not.toContain('--allowedTools'); // `--tools ""` disables every built-in tool
@@ -80,8 +83,10 @@ describe('Claude CLI adapter (against a fake claude binary)', () => {
       ANTHROPIC_BASE_URL: 'https://proxy.example', ANTHROPIC_MODEL: 'claude-opus-5-5', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'x', ANTHROPIC_SMALL_FAST_MODEL: 'y',
       CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-5-5',
     });
-    expect(Object.keys(env).sort()).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']);
-    expect(env).toMatchObject({ CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-5-5', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' });
+    expect(Object.keys(env).sort()).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']);
+    // the CLI's small-model calls (WebFetch page processing) are pinned too: on 2.1.296 they used claude-haiku-5-5
+    // and every SCOUT run failed the model guard; an inherited override must not win either
+    expect(env).toMatchObject({ CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-5-5', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-5-5', ANTHROPIC_SMALL_FAST_MODEL: 'claude-sonnet-5-5' });
   });
   it('toolSurfaceViolation accepts exactly the allowlist, in any order', () => {
     expect(toolSurfaceViolation('mono', { tools: [], mcp_servers: [] })).toBeNull();
@@ -111,6 +116,12 @@ describe('Claude CLI adapter (against a fake claude binary)', () => {
   it('fails when a different model shows up only in the usage breakdown (e.g. a downgraded subagent)', async () => {
     const { r } = await run({ FAKE_RESULT_MODEL: 'claude-haiku-5-5' });
     expect(r).toMatchObject({ ok: false, failure: 'model-mismatch' });
+  });
+  it('says whether the CLI reported a cost, and lists only completed WebFetch URLs', async () => {
+    const ok = (await run({}, { agentId: 'scout' })).r;
+    expect(ok).toMatchObject({ ok: true, costReported: true, fetchedUrls: ['https://www.boi.org.il/x?secret=1'] });
+    const hung = (await run({ FAKE_MODE: 'hang' }, { timeoutMs: 300, agentId: 'scout' })).r;
+    expect(hung).toMatchObject({ ok: false, failure: 'timeout', costReported: false, costUsd: 0, fetchedUrls: [] });
   });
   it('reports a missing CLI, a crash, a timeout and a user cancel distinctly', async () => {
     expect((await run({}, { bin: '/nonexistent/claude' })).r.failure).toBe('cli-missing');

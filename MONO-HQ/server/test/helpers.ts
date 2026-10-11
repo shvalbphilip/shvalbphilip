@@ -22,7 +22,8 @@ export class FakeRunner implements AiRunner {
   calls: AiRunRequest[] = [];
   constructor(public behave: (req: AiRunRequest, signal: AbortSignal) => Promise<AiRunResult> | AiRunResult = () => ({ ok: true, text: '{"publicSummary":"סיכום","summaryHe":"הכל תקין","nextSteps":["צעד"],"answerHe":"תשובה"}', costUsd: 0.05, observedModels: ['claude-sonnet-5-5'] })) {}
   async cliVersion() { return '2.1.296'; }
-  async run(req: AiRunRequest, signal: AbortSignal) { this.calls.push(req); return this.behave(req, signal); }
+  /** Like the real CLI, a result reports its cost unless a test says otherwise (costReported: false = killed before the result line). */
+  async run(req: AiRunRequest, signal: AbortSignal) { this.calls.push(req); return { costReported: true, ...(await this.behave(req, signal)) }; }
 }
 
 /** Today in Jerusalem as YYYY-MM-DD plus offset days, for date-relative fixtures. */

@@ -61,7 +61,8 @@ export class StateBuilder {
     return {
       now: now.toISOString(), timezone: 'Asia/Jerusalem', mode: demoMode ? 'demo' : 'real', demoRunning: this.demo.running,
       guardrails: this.guard.get(), spend: this.guard.summary(now), model: this.modelVerification(), agents: this.agents(demoMode, now.getTime()),
-      runningAiJobs: this.orch.runningAiJobs, pendingApprovals: this.orch.pendingApprovals(), lastEventSeq: this.bus.lastSeq(),
+      // pendingApprovals: a demo snapshot never shows real approvals
+      runningAiJobs: this.orch.runningAiJobs, pendingApprovals: demoMode ? [] : this.orch.pendingApprovals(), lastEventSeq: this.bus.lastSeq(),
       storageNote: 'כל הנתונים נשמרים מקומית בלבד (SQLite). לא נשלחים ל-GitHub.',
       authRequired: this.authRequired,
     };

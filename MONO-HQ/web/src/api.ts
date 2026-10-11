@@ -35,8 +35,9 @@ export async function api<T>(method: 'GET' | 'POST', path: string, opts: Opts = 
     res = await fetch(url, {
       method,
       credentials: 'same-origin',
-      headers: opts.body !== undefined ? { 'content-type': 'application/json' } : undefined,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      // Every write is JSON (the server rejects anything else), so a body-less POST still sends {}.
+      headers: method === 'POST' || opts.body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      body: method === 'POST' || opts.body !== undefined ? JSON.stringify(opts.body ?? {}) : undefined,
       signal: opts.signal,
     });
   } catch (e) {

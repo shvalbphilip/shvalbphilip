@@ -108,8 +108,9 @@ describe('1. Host-header allowlist (DNS-rebinding defence)', () => {
     // allowed Host, foreign Origin → blocked
     expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: 'http://attacker.test' } })).status).toBe(403);
     expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: 'null' } })).status).toBe(403);
-    // allowed Origin on a different port (e.g. the Vite dev server proxy) → allowed
-    expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: 'http://localhost:5173' } })).status).toBe(200);
+    // an allowed host on ANOTHER port is another app (any local dev server, or one with an XSS) → blocked
+    expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: 'http://localhost:5173' } })).status).toBe(403);
+    expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: 'http://127.0.0.1:3000' } })).status).toBe(403);
     expect((await j('/api/system/kill-switch', { method: 'POST', body, headers: { origin: `http://127.0.0.1:${port}` } })).status).toBe(200);
     // login is a mutation too: a cross-site login form must not be able to set our cookie
     expect((await j('/api/login', { method: 'POST', body: '{}', headers: { origin: 'http://attacker.test' } })).status).toBe(403);
@@ -130,13 +131,18 @@ describe('2. Per-agent tool allowlists', () => {
     expect(prompt).toMatch(/WebFetch ONLY pages whose host is gov\.il, boi\.org\.il/);
     expect(prompt).toMatch(/never fetch any other site/);
     const app = makeApp();
-    const r = app.research.ingest('t1', JSON.stringify({ items: [
+    const items = { items: [
       { titleHe: 'ריבית', summaryHe: 'הודעה', sourceUrl: 'https://www.boi.org.il/x', sourceName: 'בנק ישראל' },
+      { titleHe: 'מס הכנסה', summaryHe: 'עדכון', sourceUrl: 'https://www.gov.il/he/y', sourceName: 'gov.il' },
       { titleHe: 'אתר זר', summaryHe: 'משהו', sourceUrl: 'https://news.example.com/x', sourceName: 'חדשות' },
       { titleHe: 'לא מאובטח', summaryHe: 'משהו', sourceUrl: 'http://www.gov.il/x', sourceName: 'gov' },
-    ] }));
-    expect(r).toEqual({ stored: 2, rejected: 1, official: 1 });
-    expect(app.research.list().map((i) => i.reliability).sort()).toEqual(['official', 'unverified']);
+    ] };
+    // non-official and non-https items are rejected; "official" requires that SCOUT actually fetched that host this run
+    const r = app.research.ingest('t1', JSON.stringify(items), ['https://www.boi.org.il/he/monetary']);
+    expect(r).toEqual({ stored: 2, rejected: 2, official: 1 });
+    expect(app.research.list().map((i) => [i.sourceName, i.reliability]).sort()).toEqual([['gov.il', 'unverified'], ['בנק ישראל', 'official']]);
+    // a model that only claims a boi.org.il source, without having fetched it, never earns the official label
+    expect(app.research.ingest('t2', JSON.stringify(items)).official).toBe(0);
     app.close();
   });
 });
